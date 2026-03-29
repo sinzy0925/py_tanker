@@ -1,0 +1,14 @@
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+
+# Local IMO list (may be proprietary)
+data/imo_list.csv
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.python-version
