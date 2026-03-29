@@ -9,8 +9,10 @@
 # 使い方:
 #   chmod +x run_imo_match_tmux.sh
 #   ./run_imo_match_tmux.sh
-# 再接続:
-#   tmux attach -t "${TMUX_SESSION:-imo_ais_stream}"
+# 再接続（いまのシェルがすでに tmux 内＝Cloud Shell 多い）:
+#   tmux switch-client -t imo_ais_stream
+# 通常のシェルから:
+#   tmux attach -t imo_ais_stream
 
 set -euo pipefail
 
@@ -64,7 +66,11 @@ tmux new-session -d -s "$TMUX_SESSION" \
 echo ""
 echo "OK. バックグラウンドで実行中です。"
 echo ""
-echo "セッションに接続するには次を実行:"
-echo "  tmux attach -t imo_ais_stream"
-echo "（スクリプト先頭で TMUX_SESSION を変えた場合はその名前に合わせる）"
+echo "セッションを表示するには:"
+echo "  すでに tmux 内（Cloud Shell のデフォルトなど）のとき:"
+echo "    tmux switch-client -t imo_ais_stream"
+echo "  通常シェルから:"
+echo "    tmux attach -t imo_ais_stream"
+echo "  ネストを強制する場合のみ: TMUX= tmux attach -t imo_ais_stream"
+echo "（TMUX_SESSION を変えたときは imo_ais_stream をその名前に合わせる）"
 echo "デタッチ: Ctrl+b を押してから d"
