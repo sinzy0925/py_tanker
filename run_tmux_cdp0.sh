@@ -17,9 +17,11 @@ INSTALL_CHROME="${INSTALL_CHROME:-1}"
 #   リポジトリルートは CDP0_REPO_ROOT / スクリプト位置 / ~/py_tanker の順で解決する。
 #
 # 環境変数:
-#   INSTALL_CHROME     1: Linux で Chrome / Playwright 取得を試す（既定: 1）
-#   TMUX_CDP0_SESSION  tmux セッション名（既定: cdp0）
-#   CDP0_REPO_ROOT     明示的にリポジトリルートを指定（通常は不要）
+#   INSTALL_CHROME        1: Linux で Chrome / Playwright 取得を試す（既定: 1）
+#   TMUX_CDP0_SESSION     tmux セッション名（既定: cdp0）
+#   CDP0_REPO_ROOT        明示的にリポジトリルートを指定（通常は不要）
+#   CDP0_SKIP_PIPELINE    1: セットアップのみ（tmux も cdp0 も起動しない）。setup_chrome_playwright_env.sh と同等
+#   CDP0_NO_TMUX          1: tmux を使わず現在のシェルで cdp0_run_cdp_pipeline.py を実行
 
 set -euo pipefail
 
@@ -110,6 +112,36 @@ install_linux_chrome_and_playwright() {
 set +e
 install_linux_chrome_and_playwright
 set -e
+
+CDP0_SKIP_PIPELINE="${CDP0_SKIP_PIPELINE:-0}"
+CDP0_NO_TMUX="${CDP0_NO_TMUX:-0}"
+
+if [[ "${CDP0_SKIP_PIPELINE}" == "1" ]]; then
+  echo "[run_tmux_cdp0] セットアップのみ完了（CDP0_SKIP_PIPELINE=1）。REPO_ROOT=${REPO_ROOT}"
+  exit 0
+fi
+
+run_cdp0_pipeline() {
+  # shellcheck disable=SC2164
+  cd "$REPO_ROOT"
+  set +e
+  if [[ -f .venv/bin/activate ]]; then
+    # shellcheck source=/dev/null
+    source .venv/bin/activate
+    python cdp0_run_cdp_pipeline.py
+  else
+    python3 cdp0_run_cdp_pipeline.py
+  fi
+  ec=$?
+  set -e
+  echo "[cdp0_run_cdp_pipeline.py exit code: ${ec}]"
+  return "${ec}"
+}
+
+if [[ "${CDP0_NO_TMUX}" == "1" ]]; then
+  run_cdp0_pipeline
+  exit $?
+fi
 
 SESSION="${TMUX_CDP0_SESSION:-cdp0}"
 

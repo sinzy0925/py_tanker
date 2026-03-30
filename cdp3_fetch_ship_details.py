@@ -14,7 +14,6 @@ import asyncio
 import json
 import os
 import sys
-import shutil
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
@@ -26,6 +25,8 @@ from urllib.request import urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from playwright.async_api import Browser, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
+
+from chrome_cdp_paths import detect_chrome_executable
 
 DEFAULT_DETAILS_URL_TEMPLATE = "https://www.marinetraffic.com/en/ais/details/ships/shipid:{ship_id}"
 SHIP_DATA_DIR = Path("ship_data")
@@ -99,21 +100,6 @@ def _extract_port(cdp_url: str) -> int:
     raise ValueError(f"Invalid cdp-url: {cdp_url}")
 
 
-def _detect_chrome_path() -> str:
-    candidates = [
-        os.environ.get("PROGRAMFILES", "") + r"\Google\Chrome\Application\chrome.exe",
-        os.environ.get("PROGRAMFILES(X86)", "") + r"\Google\Chrome\Application\chrome.exe",
-        os.environ.get("LOCALAPPDATA", "") + r"\Google\Chrome\Application\chrome.exe",
-    ]
-    for path in candidates:
-        if path and Path(path).is_file():
-            return path
-    found = shutil.which("chrome")
-    if found:
-        return found
-    raise FileNotFoundError("chrome.exe が見つかりません。--chrome-path を指定してください。")
-
-
 def _wait_cdp_ready(cdp_url: str, timeout_sec: float = 15.0) -> None:
     deadline = time.time() + timeout_sec
     probe_url = cdp_url.rstrip("/") + "/json/version"
@@ -130,7 +116,7 @@ def _wait_cdp_ready(cdp_url: str, timeout_sec: float = 15.0) -> None:
 
 
 def _launch_chrome_for_cdp(args: argparse.Namespace) -> subprocess.Popen[Any]:
-    chrome_path = args.chrome_path.strip() or _detect_chrome_path()
+    chrome_path = args.chrome_path.strip() or detect_chrome_executable()
     port = _extract_port(args.cdp_url)
     user_data_dir = Path(".chrome-cdp-profile").resolve()
     user_data_dir.mkdir(parents=True, exist_ok=True)
