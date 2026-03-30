@@ -4,6 +4,8 @@ ship_details_jp.json に書き出す。
 
 既に ship_details_jp.json がある場合は、上書き前に ship_details_jp_prev.json へ退避する。
 
+抽出後、同一 ship（ship_id / payload の shipId）の重複行は先頭のみ残し、それ以降は削除する（既定・オプションなし）。
+
 使い方:
   python cdp4_ship_details_filter.py
   python cdp4_ship_details_filter.py --also-japan-mid
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -122,6 +125,40 @@ def should_keep_result(result: dict[str, Any], *, also_japan_mid: bool) -> bool:
     return False
 
 
+def _result_ship_key(result: dict[str, Any]) -> str | None:
+    """results 要素の ship_id、なければ matches 内 payload の shipId / ship_id。"""
+    v = result.get("ship_id")
+    if v is not None and str(v).strip() != "":
+        return str(v).strip()
+    for m in result.get("matches", []) if isinstance(result.get("matches"), list) else []:
+        if not isinstance(m, dict):
+            continue
+        pl = m.get("payload")
+        if not isinstance(pl, dict):
+            continue
+        for k in ("shipId", "ship_id"):
+            x = pl.get(k)
+            if x is not None and str(x).strip() != "":
+                return str(x).strip()
+    return None
+
+
+def dedupe_by_ship_id(results: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """同一 ship キーは先頭のみ残す。キー不明は __no_ship_id__ として 1 件にまとめる。"""
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    dropped = 0
+    for one in results:
+        key = _result_ship_key(one)
+        k = key if key is not None else "__no_ship_id__"
+        if k in seen:
+            dropped += 1
+            continue
+        seen.add(k)
+        out.append(one)
+    return out, dropped
+
+
 def main() -> None:
     args = parse_args()
     in_path = args.input
@@ -145,6 +182,8 @@ def main() -> None:
         ):
             filtered.append(one)
 
+    filtered, dedupe_dropped = dedupe_by_ship_id(filtered)
+
     created_at_utc = datetime.now(timezone.utc).isoformat()
     created_at_jst = _to_jst_iso(created_at_utc)
 
@@ -155,7 +194,7 @@ def main() -> None:
         filter_parts.append(
             "OR general.mmsi MID in 431–439 (ITU Japan ship allocation; not destination to Japan)"
         )
-    filter_note = "Japan-like: " + "; ".join(filter_parts)
+    filter_note = "Japan-like: " + "; ".join(filter_parts) + "; dedupe by ship_id/shipId (first wins)"
 
     out_doc: dict[str, Any] = {
         "created_at_utc": created_at_utc,
@@ -163,6 +202,7 @@ def main() -> None:
         "source_file": str(in_path.resolve()),
         "also_japan_mid": args.also_japan_mid,
         "filter_note": filter_note,
+        "dedupe_dropped": dedupe_dropped,
         "total_results_in": len(results_in),
         "total_results_kept": len(filtered),
         "ok_targets_kept": sum(1 for r in filtered if r.get("ok")),
@@ -174,6 +214,8 @@ def main() -> None:
     out_path.write_text(json.dumps(out_doc, ensure_ascii=False, indent=2), encoding="utf-8")
     if rotated:
         print(f"Rotated previous JP snapshot -> {rotated}")
+    if dedupe_dropped:
+        print(f"Deduped: dropped {dedupe_dropped} duplicate ship id(s)", file=sys.stderr)
     print(f"Wrote {len(filtered)} Japan-like ship result(s) -> {out_path}")
 
 
