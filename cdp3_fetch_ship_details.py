@@ -1,6 +1,7 @@
 """
 out.jsonl の SHIP_ID 一覧を使い、CDP 接続した Chrome で船舶詳細ページを開いて
 Fetch/XHR の JSON レスポンスを回収する。
+SHIP_ID の先頭 4 文字がすべて数字（0–9）の行だけを処理する（それ以外はスキップ）。
 各船の処理のたびに出力 JSON を更新する（途中失敗時もそれまでの results を残す）。
 
 使い方:
@@ -28,6 +29,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from playwright.async_api import Browser, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 from chrome_cdp_paths import detect_chrome_executable
+from chrome_user_agent import DEFAULT_CHROME_USER_AGENT_FILE, UA_FROM_FILE, resolve_chrome_user_agent
 
 DEFAULT_DETAILS_URL_TEMPLATE = "https://www.marinetraffic.com/en/ais/details/ships/shipid:{ship_id}"
 SHIP_DATA_DIR = Path("ship_data")
@@ -89,6 +91,25 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--limit", type=int, default=0, help="Process first N ships only (0=all)")
     p.add_argument("--show-all", action="store_true", help="Include all matches per ship in output")
+    p.add_argument(
+        "--user-agent",
+        nargs="?",
+        const=UA_FROM_FILE,
+        default=None,
+        metavar="UA",
+        help=(
+            "Chrome 起動時の User-Agent。"
+            " --user-agent のみ → chrome_user_agent.txt（--user-agent-file で別ファイル）から読む。"
+            " 未指定 → ブラウザ既定。"
+            " --no-launch-cdp-chrome のときは手動起動の Chrome に同じ UA を付ける"
+        ),
+    )
+    p.add_argument(
+        "--user-agent-file",
+        type=Path,
+        default=None,
+        help=f"--user-agent のみ指定時に読むテキスト（# 行と空行は無視、最初の有効行）。既定: {DEFAULT_CHROME_USER_AGENT_FILE}",
+    )
     return p.parse_args()
 
 
@@ -134,6 +155,12 @@ def _launch_chrome_for_cdp(args: argparse.Namespace) -> subprocess.Popen[Any]:
         cmd.append("--no-sandbox")
     if getattr(args, "chrome_headless", False):
         cmd.append("--headless=new")
+    ua = resolve_chrome_user_agent(
+        getattr(args, "user_agent", None),
+        getattr(args, "user_agent_file", None),
+    )
+    if ua:
+        cmd.append(f"--user-agent={ua}")
     cmd.append("about:blank")
     proc = subprocess.Popen(cmd)
     _wait_cdp_ready(args.cdp_url)
@@ -152,10 +179,18 @@ async def connect_browser_cdp(
     return browser, chrome_proc
 
 
+def _ship_id_first_four_numeric(ship_id: str) -> bool:
+    """先頭 4 文字がすべて十進数字なら真（4 文字未満は偽）。"""
+    if len(ship_id) < 4:
+        return False
+    return all(ship_id[i].isdigit() for i in range(4))
+
+
 def load_targets(path: Path, limit: int) -> list[dict[str, str]]:
     if not path.is_file():
         raise FileNotFoundError(f"input not found: {path}")
     out: list[dict[str, str]] = []
+    skipped = 0
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -169,7 +204,21 @@ def load_targets(path: Path, limit: int) -> list[dict[str, str]]:
         ship_id = str(row.get("SHIP_ID") or "").strip()
         if not ship_id:
             continue
-        out.append({"ship_id": ship_id, "ship_name": str(row.get("SHIPNAME") or "").strip()})
+        if not _ship_id_first_four_numeric(ship_id):
+            skipped += 1
+            continue
+        out.append(
+            {
+                "ship_id": ship_id,
+                "ship_name": str(row.get("SHIPNAME") or "").strip(),
+                "destination": str(row.get("DESTINATION") or "").strip(),
+            }
+        )
+    if skipped:
+        print(
+            f"[cdp3] skipped {skipped} row(s): SHIP_ID must start with 4 numeric digits",
+            file=sys.stderr,
+        )
     if limit > 0:
         return out[:limit]
     return out
@@ -364,6 +413,7 @@ async def run(args: argparse.Namespace) -> int:
         print(f"NG: no SHIP_ID targets in {args.input}")
         return 1
 
+    app_start = time.perf_counter()
     run_started_utc = datetime.now(timezone.utc).isoformat()
     rotated = rotate_output_if_exists(args.output)
     if rotated:
@@ -384,10 +434,21 @@ async def run(args: argparse.Namespace) -> int:
             for idx, target in enumerate(targets, start=1):
                 ship_id = target["ship_id"]
                 ship_name = target["ship_name"]
-                print(f"[{idx}/{len(targets)}] ship_id={ship_id} ship_name={ship_name}")
+                destination = target.get("destination", "")
+                print(
+                    f"[{idx}/{len(targets)}] ship_id={ship_id} ship_name={ship_name} DESTINATION={destination}",
+                    flush=True,
+                )
                 one = await collect_detail_jsons(page, ship_id, ship_name, args)
                 results.append(one)
                 write_ship_details_json(args.output, args, targets, results, run_started_utc)
+                if idx % 10 == 0:
+                    elapsed = time.perf_counter() - app_start
+                    print()
+                    print(
+                        f"[経過時間] アプリ開始から {elapsed:.1f} 秒 ({idx}/{len(targets)} 件処理済み)",
+                        flush=True,
+                    )
         finally:
             await browser.close()
             if chrome_proc and (not args.keep_chrome_open):

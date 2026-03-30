@@ -13,6 +13,8 @@ _JP_HINT_PATTERNS = [
     re.compile(r"\bJPO[A-Z]{2,4}\b", re.I),  # JPOIT 等
     re.compile(r"\bJPK[A-Z]{2,4}\b", re.I),
     re.compile(r"\bJPN[A-Z]{2,4}\b", re.I),
+    # 連結 UNLOCODE（例: AEJEA-JPYOK の JPYOK）。\bJP\b では JPYOK 内の JP に境界が付かず落ちる
+    re.compile(r"\bJP[A-Z]{3,5}\b", re.I),  # JPYOK, JPMOJ 等（JPO/JPK/JPN と重複しうる）
     re.compile(r"\bOKINAWA\b", re.I),
     re.compile(r"\bTOKYO\b", re.I),
     re.compile(r"\bYOKOHAMA\b", re.I),

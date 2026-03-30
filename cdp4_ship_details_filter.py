@@ -9,7 +9,11 @@ ship_details_jp.json に書き出す。
 使い方:
   python cdp4_ship_details_filter.py
   python cdp4_ship_details_filter.py --also-japan-mid
+  python cdp4_ship_details_filter.py --include-all
   python cdp4_ship_details_filter.py --input ship_data/ship_details.json --output ship_data/ship_details_jp.json
+
+--include-all:
+  日本向けの絞り込みをせず、入力の results のうち ok が真の要素をすべて出力する（dedupe は従来どおり）。
 
 --also-japan-mid:
   general の mmsi の先頭3桁（MID）が ITU の日本船舶向け割当 431–439 に入る船も含める（航路の「日本向け」とは別軸）。
@@ -44,6 +48,11 @@ def parse_args() -> argparse.Namespace:
         "--also-japan-mid",
         action="store_true",
         help="OR: include ships where general payload MMSI MID is 431–439 (Japanese ITU allocation; not voyage)",
+    )
+    p.add_argument(
+        "--include-all",
+        action="store_true",
+        help="Skip Japan voyage/MID filter; keep all results where ok is true",
     )
     return p.parse_args()
 
@@ -177,9 +186,11 @@ def main() -> None:
 
     filtered: list[dict[str, Any]] = []
     for one in results_in:
-        if isinstance(one, dict) and one.get("ok") and should_keep_result(
-            one, also_japan_mid=args.also_japan_mid
-        ):
+        if not isinstance(one, dict) or not one.get("ok"):
+            continue
+        if args.include_all:
+            filtered.append(one)
+        elif should_keep_result(one, also_japan_mid=args.also_japan_mid):
             filtered.append(one)
 
     filtered, dedupe_dropped = dedupe_by_ship_id(filtered)
@@ -187,20 +198,27 @@ def main() -> None:
     created_at_utc = datetime.now(timezone.utc).isoformat()
     created_at_jst = _to_jst_iso(created_at_utc)
 
-    filter_parts = [
-        "voyage.reportedDestination matches japan_wide_signals (broad)",
-    ]
-    if args.also_japan_mid:
-        filter_parts.append(
-            "OR general.mmsi MID in 431–439 (ITU Japan ship allocation; not destination to Japan)"
+    if args.include_all:
+        filter_note = (
+            "include-all: no Japan filter; all ok results from input; "
+            "dedupe by ship_id/shipId (first wins)"
         )
-    filter_note = "Japan-like: " + "; ".join(filter_parts) + "; dedupe by ship_id/shipId (first wins)"
+    else:
+        filter_parts = [
+            "voyage.reportedDestination matches japan_wide_signals (broad)",
+        ]
+        if args.also_japan_mid:
+            filter_parts.append(
+                "OR general.mmsi MID in 431–439 (ITU Japan ship allocation; not destination to Japan)"
+            )
+        filter_note = "Japan-like: " + "; ".join(filter_parts) + "; dedupe by ship_id/shipId (first wins)"
 
     out_doc: dict[str, Any] = {
         "created_at_utc": created_at_utc,
         "created_at_jst": created_at_jst,
         "source_file": str(in_path.resolve()),
         "also_japan_mid": args.also_japan_mid,
+        "include_all": args.include_all,
         "filter_note": filter_note,
         "dedupe_dropped": dedupe_dropped,
         "total_results_in": len(results_in),
@@ -216,7 +234,8 @@ def main() -> None:
         print(f"Rotated previous JP snapshot -> {rotated}")
     if dedupe_dropped:
         print(f"Deduped: dropped {dedupe_dropped} duplicate ship id(s)", file=sys.stderr)
-    print(f"Wrote {len(filtered)} Japan-like ship result(s) -> {out_path}")
+    label = "ship result(s)" if args.include_all else "Japan-like ship result(s)"
+    print(f"Wrote {len(filtered)} {label} -> {out_path}")
 
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@ python -m playwright install chromium
 | `ship_data/ship_details_prev.json` | cdp3 が上書き前に退避した **直前** の `ship_details.json` |
 | `ship_data/ship_details_jp.json` | cdp4_ship_details_filter: 航路が「日本向けっぽい」船だけを抽出 |
 | `ship_data/ship_details_jp_prev.json` | 上書き前に退避した **直前** の `ship_details_jp.json` |
-| `ship_moved/moved_report_*.json` | cdp5_diff: 位置差分レポート（日本時間のタイムスタンプ付きファイル名） |
+| `ship_moved/moved_report_01.json` … `_06.json` | cdp5_diff: 位置差分レポート。既定は `moved_report_01.json` に保存し、保存前に **01→…→06** をローテーション（古い 06 は削除）、最大 6 世代。MOVED 行には直前レポートの同一 `ship_id` を `previous_report_row` に追記（地図で前回→今回を扱うため） |
 
 `.gitignore` により、**再生成可能な成果物** はコミット対象外にできます（リポジトリはスクリプト中心）。
 
@@ -43,7 +43,7 @@ python -m playwright install chromium
 | `cdp2_mt_snapshot_filter.py` | `station0_all.json` を読み、`--mode all` 等で `ship_data/out.jsonl` 出力 |
 | `cdp3_fetch_ship_details.py` | `out.jsonl` の `SHIP_ID` ごとに詳細 XHR を取得し `ship_data/ship_details.json` に保存 |
 | `cdp4_ship_details_filter.py` | `ship_details.json` から日本向けっぽい船だけを `ship_details_jp.json` に抽出（既存があれば `_prev` へ退避）。手動で `--also-japan-mid` を付けると `general.mmsi` の MID 431–439 も OR で含める（cdp0 では未使用） |
-| `cdp5_diff_ship_positions.py` | `ship_details_jp_prev.json` と `ship_details_jp.json` を比較し移動判定を `ship_moved/` に出力 |
+| `cdp5_diff_ship_positions.py` | `ship_details_jp_prev.json` と `ship_details_jp.json` を比較し移動判定を `ship_moved/moved_report_01.json` に出力（世代ローテーションは上表のとおり）。`--json-out` で別パスを指定した場合はローテーション・`previous_report_row` 追記は行わない |
 | `japan_wide_signals.py` | 目的地文字列の日本関連ヒント（cdp2 / cdp4_ship_details_filter で利用） |
 
 ## 一括実行

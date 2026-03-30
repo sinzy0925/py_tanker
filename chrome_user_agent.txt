@@ -1,0 +1,4 @@
+# 手元の Chrome で chrome://version を開き、表示される User-Agent を
+# 下の行のように # で始めず1行で書いてください（# 行と空行は無視されます）。
+
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36

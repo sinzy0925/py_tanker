@@ -2,9 +2,21 @@
 MarineTraffic のページを Chrome で開き、リロード時に発生する
 Fetch/XHR のうち `station:0` を含む JSON レスポンスを保存する。
 
+地理範囲（重要）:
+  station:0 は「そのとき地図に読み込まれたタイル付近の船舶」だけを返す。
+  日本籍・目的地が日本でも、地図の中心・ズーム・API の件数上限のため一覧に現れない船は
+  ここに含まれず、cdp2 以降にも乗らない（特定の船を追う API ではない）。
+
+  取りこぼしを減らす例:
+  - --url で地図中心を対象海域に合わせる（既定はペルシャ湾付近の座標）
+  - zoom の数値を下げると表示範囲が広がりやすい（サイトの仕様に依存）
+
 使い方:
   python cdp1_fetch_station0_playwright.py
   python cdp1_fetch_station0_playwright.py --output ship_data/station0_all.json --show-all
+  python cdp1_fetch_station0_playwright.py --url "https://www.marinetraffic.com/en/ais/home/centerx:50/centery:27/zoom:4"
+  # 複数海域（--url を繰り返すと station:0 のマッチをすべて 1 つの JSON にまとめる）
+  python cdp1_fetch_station0_playwright.py --url URL1 --url URL2 --show-all
   python cdp1_fetch_station0_playwright.py --cdp-url http://127.0.0.1:9222
 """
 
@@ -27,8 +39,10 @@ from urllib.request import urlopen
 from playwright.async_api import Browser, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 from chrome_cdp_paths import detect_chrome_executable
+from chrome_user_agent import DEFAULT_CHROME_USER_AGENT_FILE, UA_FROM_FILE, resolve_chrome_user_agent
 
-DEFAULT_URL = "https://www.marinetraffic.com/en/ais/home/centerx:51.5/centery:27.5/zoom:7"
+DEFAULT_URL = "https://www.marinetraffic.com/"
+#DEFAULT_URL = "https://www.marinetraffic.com/en/ais/home/centerx:37.5/centery:22.2/zoom:5"
 SHIP_DATA_DIR = Path("ship_data")
 DEFAULT_OUTPUT_JSON = SHIP_DATA_DIR / "station0_all.json"
 
@@ -47,7 +61,13 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Capture MarineTraffic station:0 JSON by Playwright"
     )
-    p.add_argument("--url", default=DEFAULT_URL, help="Target page URL")
+    p.add_argument(
+        "--url",
+        action="append",
+        dest="urls",
+        metavar="URL",
+        help=f"地図ページ URL。複数指定で各地点の station:0 を取得し 1 ファイルにマージ（既定: 1 件は {DEFAULT_URL}）",
+    )
     p.add_argument(
         "--output",
         type=Path,
@@ -115,9 +135,30 @@ def parse_args() -> argparse.Namespace:
         default=_default_chrome_headless(),
         help="Pass --headless=new to auto-launched Chrome (default: on for Linux, off for Windows)",
     )
+    p.add_argument(
+        "--user-agent",
+        nargs="?",
+        const=UA_FROM_FILE,
+        default=None,
+        metavar="UA",
+        help=(
+            "Chrome 起動時の User-Agent。"
+            " --user-agent のみ → chrome_user_agent.txt（--user-agent-file で別ファイル）から読む。"
+            " 未指定 → ブラウザ既定。"
+            " --no-launch-cdp-chrome のときは手動起動の Chrome に同じ UA を付ける"
+        ),
+    )
+    p.add_argument(
+        "--user-agent-file",
+        type=Path,
+        default=None,
+        help=f"--user-agent のみ指定時に読むテキスト（# 行と空行は無視、最初の有効行）。既定: {DEFAULT_CHROME_USER_AGENT_FILE}",
+    )
     ns = p.parse_args()
     if ns.post_reload_wait_ms is None:
         ns.post_reload_wait_ms = _default_post_reload_wait_ms()
+    if not ns.urls:
+        ns.urls = [DEFAULT_URL]
     return ns
 
 
@@ -165,6 +206,12 @@ def _launch_chrome_for_cdp(args: argparse.Namespace) -> subprocess.Popen[Any]:
         cmd.append("--no-sandbox")
     if getattr(args, "chrome_headless", False):
         cmd.append("--headless=new")
+    ua = resolve_chrome_user_agent(
+        getattr(args, "user_agent", None),
+        getattr(args, "user_agent_file", None),
+    )
+    if ua:
+        cmd.append(f"--user-agent={ua}")
     cmd.append("about:blank")
     proc = subprocess.Popen(cmd)
     _wait_cdp_ready(args.cdp_url)
@@ -262,7 +309,7 @@ def _score_payload(payload: Any) -> int:
 
 
 async def capture_station0(
-    page: Page, args: argparse.Namespace
+    page: Page, args: argparse.Namespace, *, page_url: str
 ) -> tuple[list[dict[str, Any]], list[str]]:
     matches: list[dict[str, Any]] = []
     parse_tasks: set[asyncio.Task[Any]] = set()
@@ -291,6 +338,7 @@ async def capture_station0(
             {
                 "captured_at_utc": datetime.now(timezone.utc).isoformat(),
                 "name_hint": "station:0",
+                "map_page_url": page_url,
                 "url": url,
                 "method": req.method,
                 "resource_type": req.resource_type,
@@ -313,24 +361,26 @@ async def capture_station0(
         task.add_done_callback(lambda t: parse_tasks.discard(t))
 
     page.on("response", on_response)
-
-    await page.goto(args.url, wait_until="domcontentloaded", timeout=args.timeout_ms)
-    await page.wait_for_timeout(args.pre_reload_wait_ms)
     try:
-        # MarineTraffic はバックグラウンド通信が多く networkidle になりにくい。
-        await page.reload(wait_until="domcontentloaded", timeout=args.timeout_ms)
-    except PlaywrightTimeoutError:
-        # 画面更新トリガーだけ入っていれば、レスポンス監視は継続して行う。
-        await page.evaluate("() => window.location.reload()")
-    await page.wait_for_timeout(args.post_reload_wait_ms)
+        await page.goto(page_url, wait_until="domcontentloaded", timeout=args.timeout_ms)
+        await page.wait_for_timeout(args.pre_reload_wait_ms)
+        try:
+            # MarineTraffic はバックグラウンド通信が多く networkidle になりにくい。
+            await page.reload(wait_until="domcontentloaded", timeout=args.timeout_ms)
+        except PlaywrightTimeoutError:
+            # 画面更新トリガーだけ入っていれば、レスポンス監視は継続して行う。
+            await page.evaluate("() => window.location.reload()")
+        await page.wait_for_timeout(args.post_reload_wait_ms)
 
-    if parse_tasks:
-        await asyncio.gather(*parse_tasks, return_exceptions=True)
+        if parse_tasks:
+            await asyncio.gather(*parse_tasks, return_exceptions=True)
 
-    if args.verbose and observed_mt_urls:
-        print("[verbose] marinetraffic.com fetch/XHR URLs (dedup, max 100):", file=sys.stderr)
-        for u in sorted(set(observed_mt_urls))[:100]:
-            print(u, file=sys.stderr)
+        if args.verbose and observed_mt_urls:
+            print("[verbose] marinetraffic.com fetch/XHR URLs (dedup, max 100):", file=sys.stderr)
+            for u in sorted(set(observed_mt_urls))[:100]:
+                print(u, file=sys.stderr)
+    finally:
+        page.remove_listener("response", on_response)
 
     return matches, observed_mt_urls
 
@@ -352,21 +402,20 @@ def build_output(
 
     ordered = sorted(matches, key=lambda m: _score_payload(m.get("payload")), reverse=True)
     best = ordered[0]
-    if show_all:
-        return {
-            "ok": True,
-            "matched_count": len(matches),
-            "best": best,
-            "matches": ordered,
-        }
-    return {
+    base_ok: dict[str, Any] = {
         "ok": True,
         "matched_count": len(matches),
         "best": best,
     }
+    if show_all:
+        base_ok["matches"] = ordered
+    return base_ok
 
 
 async def run(args: argparse.Namespace) -> int:
+    n_urls = len(args.urls)
+    all_matches: list[dict[str, Any]] = []
+    all_observed: list[str] = []
     async with async_playwright() as pw:
         browser, chrome_proc = await connect_browser_cdp(pw, args)
         if browser.contexts:
@@ -376,13 +425,22 @@ async def run(args: argparse.Namespace) -> int:
         page = await context.new_page()
 
         try:
-            matches, observed_mt = await capture_station0(page, args)
+            for i, page_url in enumerate(args.urls, start=1):
+                if n_urls > 1:
+                    print(f"[cdp1] map {i}/{n_urls}: {page_url}", flush=True)
+                m, obs = await capture_station0(page, args, page_url=page_url)
+                all_matches.extend(m)
+                all_observed.extend(obs)
         finally:
             await browser.close()
             if chrome_proc and (not args.keep_chrome_open):
                 chrome_proc.terminate()
 
+    matches, observed_mt = all_matches, all_observed
     result = build_output(matches, args.show_all, observed_mt)
+    if n_urls > 1 and isinstance(result, dict):
+        result["merged_from_urls"] = list(args.urls)
+        result["merged_url_count"] = n_urls
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -390,6 +448,8 @@ async def run(args: argparse.Namespace) -> int:
         best = result["best"]
         print(f"OK: station:0 JSON captured -> {args.output}")
         print(f"matched_count={result['matched_count']} status={best.get('status')} url={best.get('url')}")
+        if n_urls > 1:
+            print(f"merged {n_urls} map URL(s) -> single output", flush=True)
         return 0
 
     print(f"NG: {result.get('message')}")
