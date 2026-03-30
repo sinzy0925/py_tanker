@@ -12,3 +12,15 @@ __pycache__/
 .venv/
 venv/
 .python-version
+
+# Playwright / Chrome CDP user profile (locked files; do not commit)
+.chrome-cdp-profile/
+
+# Pipeline outputs (regenerate with cdp0 / cdp1–cdp4)
+station0_all.json
+ship_details.json
+ship_details_prev.json
+out.jsonl
+ship_moved/
+matches*.jsonl
+wide_tankers.jsonl

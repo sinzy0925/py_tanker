@@ -1,15 +1,23 @@
 """
-MarineTraffic 地図の DevTools などで保存したスナップショット JSON（data.json 形式）を読み、絞り込む。
+MarineTraffic の station0 取得結果 JSON（station0_all.json）を読み、絞り込む。
 
 想定フォーマット:
-  {"type": 1, "data": {"rows": [ {...}, ... ], "areaShips": N }}
+  1) 直接スナップショット:
+     {"type": 1, "data": {"rows": [ {...}, ... ], "areaShips": N }}
+  2) fetch_station0_playwright.py の出力:
+     {
+       "ok": true,
+       "matched_count": 12,
+       "best": {..., "payload": {"type":1, "data":{"rows":[...]}}},
+       "matches": [{..., "payload": {"type":1, "data":{"rows":[...]}}}, ...]
+     }
 
 例:
   python mt_snapshot_filter.py
-      → 既定で data0.json … data5.json を読み、行をまとめて処理（存在するファイルのみ）
-  python mt_snapshot_filter.py data.json
-  python mt_snapshot_filter.py data.json --mode japan_hint --csv out.csv
-  python mt_snapshot_filter.py data.json --mode tanker --jsonl
+      → 既定で station0_all.json を読む
+  python mt_snapshot_filter.py station0_all.json
+  python mt_snapshot_filter.py station0_all.json --mode japan_hint --csv out.csv
+  python mt_snapshot_filter.py station0_all.json --mode tanker --jsonl
   python mt_snapshot_filter.py --mode japan_broad
 
 注意:
@@ -26,49 +34,57 @@ from pathlib import Path
 
 from japan_wide_signals import destination_japan_hits, destination_japan_hits_broad
 
-# 引数なしのときに読む既定スナップショット（複数時刻の比較用）
-DEFAULT_INPUT_JSONS: tuple[Path, ...] = tuple(Path(f"data{i}.json") for i in range(6))
+# 引数なしのときに読む既定ファイル
+DEFAULT_INPUT_JSON = Path("station0_all.json")
 
 
 def load_rows(path: Path) -> list[dict]:
     raw = json.loads(path.read_text(encoding="utf-8"))
+
+    # 直接 rows を持つスナップショット JSON
     if isinstance(raw, dict) and "data" in raw:
         data = raw["data"]
         if isinstance(data, dict) and "rows" in data:
             rows = data["rows"]
             if isinstance(rows, list):
                 return [r for r in rows if isinstance(r, dict)]
+
+    # fetch_station0_playwright.py 出力（best / matches）
+    if isinstance(raw, dict) and ("best" in raw or "matches" in raw):
+        captures: list[dict] = []
+        best = raw.get("best")
+        matches = raw.get("matches")
+
+        if isinstance(best, dict):
+            captures.append(best)
+        if isinstance(matches, list):
+            captures.extend(m for m in matches if isinstance(m, dict))
+
+        rows_all: list[dict] = []
+        for idx, cap in enumerate(captures):
+            payload = cap.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            data = payload.get("data")
+            if not isinstance(data, dict):
+                continue
+            rows = data.get("rows")
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                rr = dict(row)
+                rr["_capture_index"] = idx
+                rr["_capture_url"] = cap.get("url")
+                rr["_capture_status"] = cap.get("status")
+                rows_all.append(rr)
+        if rows_all:
+            return rows_all
+
     if isinstance(raw, list):
         return [r for r in raw if isinstance(r, dict)]
-    raise ValueError("想定外の JSON: type/data/rows または配列を期待します")
-
-
-def resolve_input_paths(paths: list[Path]) -> list[Path]:
-    out: list[Path] = []
-    for p in paths:
-        cand = Path(p)
-        if cand.is_file():
-            out.append(cand.resolve())
-        else:
-            print(f"WARN: skip (not found): {p}", file=sys.stderr)
-    return out
-
-
-def load_rows_multi(paths: list[Path], *, tag_source: bool) -> tuple[list[dict], dict[Path, int]]:
-    """複数ファイルの rows を連結。tag_source なら各行に _source_json（ファイル名）を付与。"""
-    all_rows: list[dict] = []
-    per_file_counts: dict[Path, int] = {}
-    for path in paths:
-        chunk = load_rows(path)
-        per_file_counts[path] = len(chunk)
-        for r in chunk:
-            if tag_source:
-                rr = dict(r)
-                rr["_source_json"] = path.name
-                all_rows.append(rr)
-            else:
-                all_rows.append(dict(r))
-    return all_rows, per_file_counts
+    raise ValueError("想定外の JSON: data.rows / best.payload.data.rows / matches[].payload.data.rows / 配列を期待します")
 
 
 def row_destination(row: dict) -> str:
@@ -136,13 +152,32 @@ def enrich_row(row: dict, *, broad_dest_hits: bool = False) -> dict:
     return out
 
 
+def dedupe_by_ship_id(rows: list[dict]) -> tuple[list[dict], int]:
+    """SHIP_ID 単位で先頭行を残して重複排除する。SHIP_ID 欠損行はそのまま残す。"""
+    seen: set[str] = set()
+    out: list[dict] = []
+    dropped = 0
+    for row in rows:
+        ship_id = str(row.get("SHIP_ID") or "").strip()
+        if not ship_id:
+            out.append(row)
+            continue
+        if ship_id in seen:
+            dropped += 1
+            continue
+        seen.add(ship_id)
+        out.append(row)
+    return out, dropped
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Filter MarineTraffic-style snapshot JSON")
     p.add_argument(
         "input",
         type=Path,
-        nargs="*",
-        help="Input JSON path(s). Omit to use data0.json … data5.json",
+        nargs="?",
+        default=DEFAULT_INPUT_JSON,
+        help="Input JSON path (default: station0_all.json)",
     )
     p.add_argument(
         "--mode",
@@ -160,17 +195,23 @@ def main() -> None:
     p.add_argument("--csv", type=Path, metavar="FILE", help="Write UTF-8 CSV (Excel 向け BOM 付き)")
     p.add_argument("--jsonl", type=Path, metavar="FILE", help="Write JSON Lines")
     p.add_argument("--with-meta", action="store_true", help="Add _filter_* diagnostic fields")
+    p.add_argument(
+        "--dedupe-by-ship-id",
+        action="store_true",
+        help="Deduplicate matched rows by SHIP_ID (keep first occurrence)",
+    )
     args = p.parse_args()
 
-    paths = list(args.input) if args.input else list(DEFAULT_INPUT_JSONS)
-    resolved = resolve_input_paths(paths)
-    if not resolved:
-        print("ERROR: no input JSON files found (check paths or data0.json … data5.json)", file=sys.stderr)
+    in_path = Path(args.input)
+    if not in_path.is_file():
+        print(f"ERROR: input JSON not found: {in_path}", file=sys.stderr)
         sys.exit(1)
 
-    tag_source = len(resolved) > 1
-    rows, per_file_counts = load_rows_multi(resolved, tag_source=tag_source)
+    rows = load_rows(in_path)
     matched = [r for r in rows if match_mode(r, args.mode)]
+    deduped_count = 0
+    if args.dedupe_by_ship_id:
+        matched, deduped_count = dedupe_by_ship_id(matched)
 
     if args.with_meta:
         meta_broad = args.mode in ("japan_broad", "japan_tanker_broad")
@@ -202,21 +243,21 @@ def main() -> None:
         return
 
     # stdout: compact table
-    src_summary = ",".join(p.name for p in resolved)
-    per = " ".join(f"{p.name}:{per_file_counts[p]}" for p in resolved)
     print(
-        f"# inputs={src_summary} mode={args.mode} total_rows={len(rows)} matched={len(matched)} ({per})",
+        f"# input={in_path.name} mode={args.mode} total_rows={len(rows)} "
+        f"matched={len(matched)} deduped={deduped_count}",
         file=sys.stderr,
     )
     for r in matched:
-        src = f"{r.get('_source_json', '')}\t" if tag_source else ""
         name = (r.get("SHIPNAME") or "").strip()
         flag = row_flag(r)
         dest = row_destination(r)
         lat = r.get("LAT")
         lon = r.get("LON")
         sid = r.get("SHIP_ID")
-        print(f"{src}{name}\tFLAG={flag}\tDEST={dest}\tLAT={lat}\tLON={lon}\tSHIP_ID={sid}")
+        cap = r.get("_capture_index")
+        cap_txt = f"\tCAP={cap}" if cap is not None else ""
+        print(f"{name}\tFLAG={flag}\tDEST={dest}\tLAT={lat}\tLON={lon}\tSHIP_ID={sid}{cap_txt}")
 
 
 if __name__ == "__main__":
