@@ -1,6 +1,7 @@
 """
 out.jsonl の SHIP_ID 一覧を使い、CDP 接続した Chrome で船舶詳細ページを開いて
 Fetch/XHR の JSON レスポンスを回収する。
+各船の処理のたびに出力 JSON を更新する（途中失敗時もそれまでの results を残す）。
 
 使い方:
   python cdp3_fetch_ship_details.py
@@ -325,11 +326,51 @@ async def collect_detail_jsons(
     return out
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def write_ship_details_json(
+    output: Path,
+    args: argparse.Namespace,
+    targets: list[dict[str, str]],
+    results: list[dict[str, Any]],
+    run_started_utc: str,
+) -> None:
+    """cdp4 互換のルートオブジェクトを書き出す（各船ごとに呼んでもよい）。"""
+    ok_count = sum(1 for r in results if r.get("ok"))
+    now_utc = datetime.now(timezone.utc).isoformat()
+    payload: dict[str, Any] = {
+        "created_at_utc": run_started_utc,
+        "created_at_jst": _to_jst_from_iso(run_started_utc),
+        "last_written_at_utc": now_utc,
+        "last_written_at_jst": _to_jst_from_iso(now_utc),
+        "input": str(args.input),
+        "total_targets": len(targets),
+        "ok_targets": ok_count,
+        "results_written": len(results),
+        "run_complete": len(results) >= len(targets),
+        "results": results,
+    }
+    _atomic_write_text(output, json.dumps(payload, ensure_ascii=False, indent=2))
+
+
 async def run(args: argparse.Namespace) -> int:
     targets = load_targets(args.input, args.limit)
     if not targets:
         print(f"NG: no SHIP_ID targets in {args.input}")
         return 1
+
+    run_started_utc = datetime.now(timezone.utc).isoformat()
+    rotated = rotate_output_if_exists(args.output)
+    if rotated:
+        print(f"Rotated previous output -> {rotated}")
+
+    results: list[dict[str, Any]] = []
+    write_ship_details_json(args.output, args, targets, results, run_started_utc)
 
     async with async_playwright() as pw:
         browser, chrome_proc = await connect_browser_cdp(pw, args)
@@ -338,7 +379,6 @@ async def run(args: argparse.Namespace) -> int:
         else:
             context = await browser.new_context()
         page = await context.new_page()
-        results: list[dict[str, Any]] = []
 
         try:
             for idx, target in enumerate(targets, start=1):
@@ -347,26 +387,13 @@ async def run(args: argparse.Namespace) -> int:
                 print(f"[{idx}/{len(targets)}] ship_id={ship_id} ship_name={ship_name}")
                 one = await collect_detail_jsons(page, ship_id, ship_name, args)
                 results.append(one)
+                write_ship_details_json(args.output, args, targets, results, run_started_utc)
         finally:
             await browser.close()
             if chrome_proc and (not args.keep_chrome_open):
                 chrome_proc.terminate()
 
     ok_count = sum(1 for r in results if r.get("ok"))
-    created_at_utc = datetime.now(timezone.utc).isoformat()
-    payload = {
-        "created_at_utc": created_at_utc,
-        "created_at_jst": _to_jst_from_iso(created_at_utc),
-        "input": str(args.input),
-        "total_targets": len(targets),
-        "ok_targets": ok_count,
-        "results": results,
-    }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    rotated = rotate_output_if_exists(args.output)
-    args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    if rotated:
-        print(f"Rotated previous output -> {rotated}")
     print(f"Done: ok_targets={ok_count}/{len(targets)} -> {args.output}")
     return 0 if ok_count > 0 else 1
 
