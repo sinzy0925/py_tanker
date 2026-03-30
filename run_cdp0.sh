@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# run_tmux_cdp0.sh と同一ロジックで Chrome / Playwright をセットアップするだけ（tmux なし・cdp0 は起動しない）。
-# 実体は CDP0_SKIP_PIPELINE=1 の run_tmux_cdp0.sh。
+# Chrome / Playwright セットアップのみ（tmux も cdp0 パイプラインも起動しない）。
+# run_tmux_cdp0.sh に CDP0_SKIP_PIPELINE=1 を付けて exec する。
+#
+# パイプラインを tmux なしで動かす場合: CDP0_NO_TMUX=1 ./run_tmux_cdp0.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER="${SCRIPT_DIR}/run_tmux_cdp0.sh"
@@ -13,5 +15,5 @@ if [[ ! -f "${RUNNER}" ]]; then
   fi
 fi
 
-export CDP0_SKIP_PIPELINE="${CDP0_SKIP_PIPELINE:-1}"
-exec bash "${RUNNER}" "$@"
+# 環境に CDP0_SKIP_PIPELINE=0 が残っていると従来の export では tmux 側に進んでしまうため、常に 1 を付与する
+exec env CDP0_SKIP_PIPELINE=1 bash "${RUNNER}" "$@"
