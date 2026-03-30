@@ -198,6 +198,56 @@ def _request_mentions_station0(url: str, post_data: str) -> bool:
     return "station%3a0" in url.lower()
 
 
+def _observed_urls_cloudflare_only(observed: list[str]) -> bool:
+    """観測された MarineTraffic の fetch/XHR が Cloudflare（cdn-cgi）だけか。"""
+    uniq = [u for u in sorted(set(observed)) if "marinetraffic.com" in u.lower()]
+    if not uniq:
+        return False
+    return all("/cdn-cgi/" in u.lower() for u in uniq)
+
+
+def _failure_diagnostics(observed: list[str]) -> dict[str, Any]:
+    uniq = sorted(set(observed))
+    sample = uniq[:40]
+    out: dict[str, Any] = {
+        "observed_marinetraffic_fetch_xhr_count": len(uniq),
+        "observed_marinetraffic_fetch_xhr_urls_sample": sample,
+    }
+    if _observed_urls_cloudflare_only(observed):
+        out["likely_cloudflare_bot_challenge"] = True
+        out["hint_ja"] = (
+            "MarineTraffic の手前で Cloudflare がチャレンジのみ返している可能性が高いです。"
+            " データセンター（Google Cloud Shell 等）やヘッドレス Chrome は通らないことがあります。"
+            " 自宅など通常ブラウザで地図が表示できるネットワークで実行するか、公式 API の利用を検討してください。"
+        )
+    elif not uniq:
+        out["hint_ja"] = (
+            "marinetraffic.com への fetch/XHR が観測されませんでした。"
+            " ネットワーク・DNS・URL の誤り、またはページがまったく読み込まれていない可能性があります。"
+        )
+    else:
+        out["hint_ja"] = (
+            "station:0 を含むリクエストは観測されませんでした。"
+            " MarineTraffic の API 形式変更の可能性があります。--verbose の URL 一覧を参考にしてください。"
+        )
+    return out
+
+
+def _print_failure_explanation(observed: list[str]) -> None:
+    if _observed_urls_cloudflare_only(observed):
+        print(
+            "【推定原因】Cloudflare がボット対策チャレンジのみ返しており、"
+            "station:0 の API に到達していません。"
+            " Cloud Shell などデータセンター IP ではよく起きます。自宅 PC 等での実行を試してください。",
+            file=sys.stderr,
+        )
+    elif not observed:
+        print(
+            "【補足】MarineTraffic への fetch/XHR が一度も記録されませんでした。",
+            file=sys.stderr,
+        )
+
+
 def _score_payload(payload: Any) -> int:
     if isinstance(payload, dict):
         score = 10
@@ -211,23 +261,12 @@ def _score_payload(payload: Any) -> int:
     return 0
 
 
-async def capture_station0(page: Page, args: argparse.Namespace) -> list[dict[str, Any]]:
+async def capture_station0(
+    page: Page, args: argparse.Namespace
+) -> tuple[list[dict[str, Any]], list[str]]:
     matches: list[dict[str, Any]] = []
     parse_tasks: set[asyncio.Task[Any]] = set()
-    debug_mt_urls: list[str] = []
-
-    def on_response_debug(response: Any) -> None:
-        if not args.verbose:
-            return
-        try:
-            rt = response.request.resource_type
-            if rt not in {"fetch", "xhr"}:
-                return
-            u = response.url
-            if "marinetraffic.com" in u:
-                debug_mt_urls.append(u)
-        except Exception:
-            pass
+    observed_mt_urls: list[str] = []
 
     async def process_response(response: Any) -> None:
         req = response.request
@@ -261,13 +300,19 @@ async def capture_station0(page: Page, args: argparse.Namespace) -> list[dict[st
         )
 
     def on_response(response: Any) -> None:
+        try:
+            req = response.request
+            if req.resource_type in {"fetch", "xhr"}:
+                u = response.url
+                if "marinetraffic.com" in u and len(observed_mt_urls) < 120:
+                    observed_mt_urls.append(u)
+        except Exception:
+            pass
         task = asyncio.create_task(process_response(response))
         parse_tasks.add(task)
         task.add_done_callback(lambda t: parse_tasks.discard(t))
 
     page.on("response", on_response)
-    if args.verbose:
-        page.on("response", on_response_debug)
 
     await page.goto(args.url, wait_until="domcontentloaded", timeout=args.timeout_ms)
     await page.wait_for_timeout(args.pre_reload_wait_ms)
@@ -282,21 +327,28 @@ async def capture_station0(page: Page, args: argparse.Namespace) -> list[dict[st
     if parse_tasks:
         await asyncio.gather(*parse_tasks, return_exceptions=True)
 
-    if args.verbose and debug_mt_urls:
+    if args.verbose and observed_mt_urls:
         print("[verbose] marinetraffic.com fetch/XHR URLs (dedup, max 100):", file=sys.stderr)
-        for u in sorted(set(debug_mt_urls))[:100]:
+        for u in sorted(set(observed_mt_urls))[:100]:
             print(u, file=sys.stderr)
 
-    return matches
+    return matches, observed_mt_urls
 
 
-def build_output(matches: list[dict[str, Any]], show_all: bool) -> dict[str, Any]:
+def build_output(
+    matches: list[dict[str, Any]],
+    show_all: bool,
+    observed_mt_urls: list[str] | None = None,
+) -> dict[str, Any]:
     if not matches:
-        return {
+        out: dict[str, Any] = {
             "ok": False,
             "message": "station:0 を含む JSON レスポンスを取得できませんでした。",
             "matched_count": 0,
         }
+        if observed_mt_urls is not None:
+            out.update(_failure_diagnostics(observed_mt_urls))
+        return out
 
     ordered = sorted(matches, key=lambda m: _score_payload(m.get("payload")), reverse=True)
     best = ordered[0]
@@ -324,13 +376,13 @@ async def run(args: argparse.Namespace) -> int:
         page = await context.new_page()
 
         try:
-            matches = await capture_station0(page, args)
+            matches, observed_mt = await capture_station0(page, args)
         finally:
             await browser.close()
             if chrome_proc and (not args.keep_chrome_open):
                 chrome_proc.terminate()
 
-    result = build_output(matches, args.show_all)
+    result = build_output(matches, args.show_all, observed_mt)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -342,7 +394,8 @@ async def run(args: argparse.Namespace) -> int:
 
     print(f"NG: {result.get('message')}")
     print(f"Saved diagnostic JSON -> {args.output}")
-    if not args.verbose:
+    _print_failure_explanation(observed_mt)
+    if not args.verbose and not _observed_urls_cloudflare_only(observed_mt):
         print(
             "ヒント: --verbose で marinetraffic への fetch/XHR URL を列挙。"
             " Linux では待ちを延ばす例: --post-reload-wait-ms 45000",
