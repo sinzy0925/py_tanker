@@ -17,10 +17,9 @@ venv/
 .chrome-cdp-profile/
 
 # Pipeline outputs (regenerate with cdp0 / cdp1–cdp4)
-station0_all.json
-ship_details.json
-ship_details_prev.json
-out.jsonl
+ship_data/out.jsonl
+ship_data/ship_details_prev.json
+ship_data/ship_details_jp.json
+ship_data/ship_details_jp_prev.json
+ship_data/ship_moved/
 ship_moved/
-matches*.jsonl
-wide_tankers.jsonl

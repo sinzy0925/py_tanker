@@ -3,9 +3,9 @@ MarineTraffic のページを Chrome で開き、リロード時に発生する
 Fetch/XHR のうち `station:0` を含む JSON レスポンスを保存する。
 
 使い方:
-  python fetch_station0_playwright.py
-  python fetch_station0_playwright.py --output station0.json --show-all
-  python fetch_station0_playwright.py --cdp-url http://127.0.0.1:9222
+  python cdp1_fetch_station0_playwright.py
+  python cdp1_fetch_station0_playwright.py --output ship_data/station0_all.json --show-all
+  python cdp1_fetch_station0_playwright.py --cdp-url http://127.0.0.1:9222
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 import shutil
 import subprocess
 import time
@@ -27,6 +28,13 @@ from urllib.request import urlopen
 from playwright.async_api import Browser, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 DEFAULT_URL = "https://www.marinetraffic.com/en/ais/home/centerx:51.5/centery:27.5/zoom:7"
+SHIP_DATA_DIR = Path("ship_data")
+DEFAULT_OUTPUT_JSON = SHIP_DATA_DIR / "station0_all.json"
+
+
+def _default_chrome_headless() -> bool:
+    """Linux（サーバ・Cloud Shell 等）ではヘッドレス既定。Windows ではウィンドウ表示。"""
+    return sys.platform.startswith("linux")
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,8 +45,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--output",
         type=Path,
-        default=Path("station0_response.json"),
-        help="Output JSON path",
+        default=DEFAULT_OUTPUT_JSON,
+        help=f"Output JSON path (default: {DEFAULT_OUTPUT_JSON})",
     )
     p.add_argument(
         "--show-all",
@@ -89,6 +97,12 @@ def parse_args() -> argparse.Namespace:
         "--keep-chrome-open",
         action="store_true",
         help="Keep auto-launched Chrome running after capture",
+    )
+    p.add_argument(
+        "--chrome-headless",
+        action=argparse.BooleanOptionalAction,
+        default=_default_chrome_headless(),
+        help="Pass --headless=new to auto-launched Chrome (default: on for Linux, off for Windows)",
     )
     return p.parse_args()
 
@@ -144,8 +158,10 @@ def _launch_chrome_for_cdp(args: argparse.Namespace) -> subprocess.Popen[Any]:
         f"--user-data-dir={str(user_data_dir)}",
         "--no-first-run",
         "--no-default-browser-check",
-        "about:blank",
     ]
+    if getattr(args, "chrome_headless", False):
+        cmd.append("--headless=new")
+    cmd.append("about:blank")
     proc = subprocess.Popen(cmd)
     _wait_cdp_ready(args.cdp_url)
     return proc

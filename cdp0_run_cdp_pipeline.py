@@ -1,11 +1,11 @@
 """
-cdp1 -> cdp4 を、会話で使った引数どおりに順に実行する。
+cdp1 -> cdp4_ship_details_filter -> cdp5_diff を順に実行する。
 
-  python run_cdp_pipeline.py
+  python cdp0_run_cdp_pipeline.py
 
 前提:
-  - 作業ディレクトリはこのスクリプトと同じフォルダ（相対パス station0_all.json 等）
-  - 初回のみ cdp4 は ship_details_prev.json が無く失敗することがある（2回目以降はOK）
+  - 作業ディレクトリはこのスクリプトと同じフォルダ（成果物は ship_data/ 以下）
+  - 初回のみ cdp5_diff は ship_data/ship_details_jp_prev.json が無く失敗することがある（2回目以降はOK）
 """
 from __future__ import annotations
 
@@ -20,25 +20,26 @@ STEPS: list[list[str]] = [
         "cdp1_fetch_station0_playwright.py",
         "--show-all",
         "--output",
-        "station0_all.json",
+        "ship_data/station0_all.json",
     ],
     [
         "cdp2_mt_snapshot_filter.py",
         "--mode",
-        "japan_hint",
+        "all",
         "--dedupe-by-ship-id",
         "--jsonl",
-        "out.jsonl",
+        "ship_data/out.jsonl",
     ],
     [
         "cdp3_fetch_ship_details.py",
         "--input",
-        "out.jsonl",
+        "ship_data/out.jsonl",
         "--output",
-        "ship_details.json",
+        "ship_data/ship_details.json",
         "--show-all",
     ],
-    ["cdp4_diff_ship_positions.py"],
+    ["cdp4_ship_details_filter.py"],
+    ["cdp5_diff_ship_positions.py"],
 ]
 
 

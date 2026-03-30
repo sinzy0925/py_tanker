@@ -3,8 +3,8 @@ out.jsonl の SHIP_ID 一覧を使い、CDP 接続した Chrome で船舶詳細�
 Fetch/XHR の JSON レスポンスを回収する。
 
 使い方:
-  python fetch_ship_details_cdp.py --input out.jsonl --output ship_details.json
-  python fetch_ship_details_cdp.py --input out.jsonl --limit 3 --show-all
+  python cdp3_fetch_ship_details.py
+  python cdp3_fetch_ship_details.py --input ship_data/out.jsonl --output ship_data/ship_details.json --show-all
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 import shutil
 import subprocess
 import time
@@ -27,6 +28,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from playwright.async_api import Browser, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 DEFAULT_DETAILS_URL_TEMPLATE = "https://www.marinetraffic.com/en/ais/details/ships/shipid:{ship_id}"
+SHIP_DATA_DIR = Path("ship_data")
+DEFAULT_SHIP_LIST_JSONL = SHIP_DATA_DIR / "out.jsonl"
+DEFAULT_SHIP_DETAILS_JSON = SHIP_DATA_DIR / "ship_details.json"
 try:
     JST = ZoneInfo("Asia/Tokyo")
 except ZoneInfoNotFoundError:
@@ -34,10 +38,25 @@ except ZoneInfoNotFoundError:
     JST = timezone(timedelta(hours=9), name="JST")
 
 
+def _default_chrome_headless() -> bool:
+    """Linux ではヘッドレス既定。Windows ではウィンドウ表示。"""
+    return sys.platform.startswith("linux")
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Fetch ship detail JSONs with Playwright CDP")
-    p.add_argument("--input", type=Path, default=Path("out.jsonl"), help="Input JSONL path")
-    p.add_argument("--output", type=Path, default=Path("ship_details.json"), help="Output JSON path")
+    p.add_argument(
+        "--input",
+        type=Path,
+        default=DEFAULT_SHIP_LIST_JSONL,
+        help=f"Input JSONL path (default: {DEFAULT_SHIP_LIST_JSONL})",
+    )
+    p.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_SHIP_DETAILS_JSON,
+        help=f"Output JSON path (default: {DEFAULT_SHIP_DETAILS_JSON})",
+    )
     p.add_argument("--cdp-url", default="http://127.0.0.1:9222", help="CDP endpoint URL")
     p.add_argument("--chrome-path", default="", help="Chrome executable path (optional)")
     p.add_argument(
@@ -53,6 +72,12 @@ def parse_args() -> argparse.Namespace:
         help="Do not launch Chrome; connect to existing CDP endpoint",
     )
     p.add_argument("--keep-chrome-open", action="store_true", help="Keep auto-launched Chrome open")
+    p.add_argument(
+        "--chrome-headless",
+        action=argparse.BooleanOptionalAction,
+        default=_default_chrome_headless(),
+        help="Pass --headless=new to auto-launched Chrome (default: on for Linux, off for Windows)",
+    )
     p.add_argument("--timeout-ms", type=int, default=120_000, help="Navigation timeout in ms")
     p.add_argument("--post-open-wait-ms", type=int, default=7_000, help="Wait after opening details page")
     p.add_argument(
@@ -115,8 +140,10 @@ def _launch_chrome_for_cdp(args: argparse.Namespace) -> subprocess.Popen[Any]:
         f"--user-data-dir={str(user_data_dir)}",
         "--no-first-run",
         "--no-default-browser-check",
-        "about:blank",
     ]
+    if getattr(args, "chrome_headless", False):
+        cmd.append("--headless=new")
+    cmd.append("about:blank")
     proc = subprocess.Popen(cmd)
     _wait_cdp_ready(args.cdp_url)
     return proc

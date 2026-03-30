@@ -1,11 +1,11 @@
 """
-ship_details_prev.json と ship_details.json を比較し、
-各船の位置差分から移動判定を出す。
+ship_details_jp_prev.json と ship_details_jp.json を比較し、
+各船の位置差分から移動判定を出す（cdp4_ship_details_filter 出力向け）。
 
 使い方:
-  python diff_ship_positions.py
-  python diff_ship_positions.py --prev ship_details_prev.json --curr ship_details.json
-  python diff_ship_positions.py --min-distance-km 0.5 --min-speed-kn 1.0 --json-out moved_report.json
+  python cdp5_diff_ship_positions.py
+  python cdp5_diff_ship_positions.py --prev ship_data/ship_details_jp_prev.json --curr ship_data/ship_details_jp.json
+  python cdp5_diff_ship_positions.py --min-distance-km 0.5 --min-speed-kn 1.0
 """
 
 from __future__ import annotations
@@ -25,10 +25,23 @@ except ZoneInfoNotFoundError:
     JST = timezone(timedelta(hours=9), name="JST")
 
 
+SHIP_DATA_DIR = Path("ship_data")
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Diff positions between two ship_details JSON files")
-    p.add_argument("--prev", type=Path, default=Path("ship_details_prev.json"), help="Previous snapshot JSON")
-    p.add_argument("--curr", type=Path, default=Path("ship_details.json"), help="Current snapshot JSON")
+    p.add_argument(
+        "--prev",
+        type=Path,
+        default=SHIP_DATA_DIR / "ship_details_jp_prev.json",
+        help=f"Previous snapshot JSON (default: {SHIP_DATA_DIR / 'ship_details_jp_prev.json'})",
+    )
+    p.add_argument(
+        "--curr",
+        type=Path,
+        default=SHIP_DATA_DIR / "ship_details_jp.json",
+        help=f"Current snapshot JSON (default: {SHIP_DATA_DIR / 'ship_details_jp.json'})",
+    )
     p.add_argument("--min-distance-km", type=float, default=1.0, help="Moved threshold by distance (km)")
     p.add_argument("--min-speed-kn", type=float, default=1.0, help="Moved threshold by speed (knots)")
     p.add_argument(

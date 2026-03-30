@@ -1,4 +1,0 @@
-imo,name
-# data/imo_list.csv にコピーして使う（imo_list.csv は .gitignore）
-# テスト: かつて sample で出た船の IMO（エリア内にいればマッチ）
-9503067,VALLIANZ STEADFAST
