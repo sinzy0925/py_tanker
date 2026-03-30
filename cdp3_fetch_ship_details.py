@@ -126,7 +126,11 @@ def _launch_chrome_for_cdp(args: argparse.Namespace) -> subprocess.Popen[Any]:
         f"--user-data-dir={str(user_data_dir)}",
         "--no-first-run",
         "--no-default-browser-check",
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
     ]
+    if sys.platform.startswith("linux"):
+        cmd.append("--no-sandbox")
     if getattr(args, "chrome_headless", False):
         cmd.append("--headless=new")
     cmd.append("about:blank")

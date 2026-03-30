@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from urllib.request import urlopen
 
 from playwright.async_api import Browser, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
@@ -36,6 +36,11 @@ DEFAULT_OUTPUT_JSON = SHIP_DATA_DIR / "station0_all.json"
 def _default_chrome_headless() -> bool:
     """Linux（サーバ・Cloud Shell 等）ではヘッドレス既定。Windows ではウィンドウ表示。"""
     return sys.platform.startswith("linux")
+
+
+def _default_post_reload_wait_ms() -> int:
+    """クラウド・遅延回線では station:0 が遅れて返ることがある。"""
+    return 22_000 if sys.platform.startswith("linux") else 12_000
 
 
 def parse_args() -> argparse.Namespace:
@@ -69,8 +74,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--post-reload-wait-ms",
         type=int,
-        default=12_000,
-        help="Wait after reload in ms",
+        default=None,
+        help="Wait after reload in ms (default: 22000 on Linux, 12000 elsewhere)",
+    )
+    p.add_argument(
+        "--verbose",
+        action="store_true",
+        help="失敗時の調査用: marinetraffic.com への fetch/XHR の URL を stderr に列挙",
     )
     p.add_argument(
         "--cdp-url",
@@ -105,7 +115,10 @@ def parse_args() -> argparse.Namespace:
         default=_default_chrome_headless(),
         help="Pass --headless=new to auto-launched Chrome (default: on for Linux, off for Windows)",
     )
-    return p.parse_args()
+    ns = p.parse_args()
+    if ns.post_reload_wait_ms is None:
+        ns.post_reload_wait_ms = _default_post_reload_wait_ms()
+    return ns
 
 
 def _extract_port(cdp_url: str) -> int:
@@ -144,7 +157,12 @@ def _launch_chrome_for_cdp(args: argparse.Namespace) -> subprocess.Popen[Any]:
         f"--user-data-dir={str(user_data_dir)}",
         "--no-first-run",
         "--no-default-browser-check",
+        # サーバ・Cloud Shell 向け: 共有メモリ不足と自動化フラグ緩和
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled",
     ]
+    if sys.platform.startswith("linux"):
+        cmd.append("--no-sandbox")
     if getattr(args, "chrome_headless", False):
         cmd.append("--headless=new")
     cmd.append("about:blank")
@@ -166,6 +184,20 @@ async def connect_browser_cdp(
     return browser, chrome_proc
 
 
+def _request_mentions_station0(url: str, post_data: str) -> bool:
+    """URL エンコードされた station:0（station%3A0 等）も拾う。"""
+    if "station:0" in post_data:
+        return True
+    if "station:0" in url:
+        return True
+    try:
+        if "station:0" in unquote(url):
+            return True
+    except Exception:
+        pass
+    return "station%3a0" in url.lower()
+
+
 def _score_payload(payload: Any) -> int:
     if isinstance(payload, dict):
         score = 10
@@ -182,6 +214,20 @@ def _score_payload(payload: Any) -> int:
 async def capture_station0(page: Page, args: argparse.Namespace) -> list[dict[str, Any]]:
     matches: list[dict[str, Any]] = []
     parse_tasks: set[asyncio.Task[Any]] = set()
+    debug_mt_urls: list[str] = []
+
+    def on_response_debug(response: Any) -> None:
+        if not args.verbose:
+            return
+        try:
+            rt = response.request.resource_type
+            if rt not in {"fetch", "xhr"}:
+                return
+            u = response.url
+            if "marinetraffic.com" in u:
+                debug_mt_urls.append(u)
+        except Exception:
+            pass
 
     async def process_response(response: Any) -> None:
         req = response.request
@@ -190,7 +236,7 @@ async def capture_station0(page: Page, args: argparse.Namespace) -> list[dict[st
 
         url = response.url
         post_data = req.post_data or ""
-        if "station:0" not in url and "station:0" not in post_data:
+        if not _request_mentions_station0(url, post_data):
             return
 
         payload: Any
@@ -220,6 +266,8 @@ async def capture_station0(page: Page, args: argparse.Namespace) -> list[dict[st
         task.add_done_callback(lambda t: parse_tasks.discard(t))
 
     page.on("response", on_response)
+    if args.verbose:
+        page.on("response", on_response_debug)
 
     await page.goto(args.url, wait_until="domcontentloaded", timeout=args.timeout_ms)
     await page.wait_for_timeout(args.pre_reload_wait_ms)
@@ -233,6 +281,12 @@ async def capture_station0(page: Page, args: argparse.Namespace) -> list[dict[st
 
     if parse_tasks:
         await asyncio.gather(*parse_tasks, return_exceptions=True)
+
+    if args.verbose and debug_mt_urls:
+        print("[verbose] marinetraffic.com fetch/XHR URLs (dedup, max 100):", file=sys.stderr)
+        for u in sorted(set(debug_mt_urls))[:100]:
+            print(u, file=sys.stderr)
+
     return matches
 
 
@@ -288,6 +342,12 @@ async def run(args: argparse.Namespace) -> int:
 
     print(f"NG: {result.get('message')}")
     print(f"Saved diagnostic JSON -> {args.output}")
+    if not args.verbose:
+        print(
+            "ヒント: --verbose で marinetraffic への fetch/XHR URL を列挙。"
+            " Linux では待ちを延ばす例: --post-reload-wait-ms 45000",
+            file=sys.stderr,
+        )
     return 1
 
 
