@@ -55,11 +55,14 @@ python cdp0_run_cdp_pipeline.py
 
 ### Google Cloud Shell（tmux）
 
-リポジトリ直下の `run_tmux_cdp0.sh` は、**スクリプトがあるディレクトリをリポジトリルートとして** `cdp0` を tmux で起動する。親ディレクトリからでも `bash py_tanker/run_tmux_cdp0.sh` のように呼べる。
+`run_tmux_cdp0.sh` はリポジトリルートを自動解決し、そのディレクトリで `cdp0` を tmux 起動する。解決順は **`CDP0_REPO_ROOT`（任意）→ スクリプトと同じディレクトリ → その直下の `py_tanker/` → `~/py_tanker`**。そのため **カレントを `/home/USER` のまま**、次のどれでもよい。
+
+- リポジトリを `~/py_tanker` に置き、`run_tmux_cdp0.sh` をホームにコピーして `./run_tmux_cdp0.sh`
+- 同じく `bash ~/py_tanker/run_tmux_cdp0.sh`（親ディレクトリから `bash py_tanker/run_tmux_cdp0.sh` でも可）
 
 ```bash
-chmod +x run_tmux_cdp0.sh
-./run_tmux_cdp0.sh
+chmod +x run_tmux_cdp0.sh   # または ~/py_tanker 内のファイルに付与
+./run_tmux_cdp0.sh          # ホームに置いた場合、または bash ~/py_tanker/run_tmux_cdp0.sh
 tmux attach -t cdp0
 ```
 

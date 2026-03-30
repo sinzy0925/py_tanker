@@ -8,9 +8,13 @@ INSTALL_CHROME="${INSTALL_CHROME:-1}"
 #   chmod +x run_tmux_cdp0.sh
 #   ./run_tmux_cdp0.sh
 #
+# ホーム（例: /home/USER）にいて実行したい場合:
+#   リポジトリを ~/py_tanker に置き、上と同様に ~/run_tmux_cdp0.sh を実行するか、
+#   bash ~/py_tanker/run_tmux_cdp0.sh  （カレントはホームのまま）
+#
 # リポジトリの「親ディレクトリ」にいて実行する場合:
 #   bash py_tanker/run_tmux_cdp0.sh
-#   このスクリプトは自身の場所からリポジトリルートを特定し、そこに cd してから動かす。
+#   リポジトリルートは CDP0_REPO_ROOT / スクリプト位置 / ~/py_tanker の順で解決する。
 #
 # 環境変数:
 #   INSTALL_CHROME     1: Linux で Chrome / Playwright 取得を試す（既定: 1）
@@ -20,10 +24,32 @@ INSTALL_CHROME="${INSTALL_CHROME:-1}"
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="${CDP0_REPO_ROOT:-$SCRIPT_DIR}"
 
-if [[ ! -f "$REPO_ROOT/cdp0_run_cdp_pipeline.py" ]]; then
-  echo "ERROR: cdp0_run_cdp_pipeline.py not found under: $REPO_ROOT" >&2
+# リポジトリルート: CDP0_REPO_ROOT > スクリプト直下 > スクリプト直下の py_tanker/ > ~/py_tanker（ホーム固定）
+resolve_repo_root() {
+  if [[ -n "${CDP0_REPO_ROOT:-}" ]] && [[ -f "${CDP0_REPO_ROOT}/cdp0_run_cdp_pipeline.py" ]]; then
+    (cd "${CDP0_REPO_ROOT}" && pwd)
+    return 0
+  fi
+  if [[ -f "${SCRIPT_DIR}/cdp0_run_cdp_pipeline.py" ]]; then
+    echo "${SCRIPT_DIR}"
+    return 0
+  fi
+  if [[ -f "${SCRIPT_DIR}/py_tanker/cdp0_run_cdp_pipeline.py" ]]; then
+    (cd "${SCRIPT_DIR}/py_tanker" && pwd)
+    return 0
+  fi
+  if [[ -n "${HOME:-}" ]] && [[ -f "${HOME}/py_tanker/cdp0_run_cdp_pipeline.py" ]]; then
+    (cd "${HOME}/py_tanker" && pwd)
+    return 0
+  fi
+  return 1
+}
+
+if ! REPO_ROOT="$(resolve_repo_root)"; then
+  echo "ERROR: cdp0_run_cdp_pipeline.py が見つかりません。" >&2
+  echo "  例: cd py_tanker && ./run_tmux_cdp0.sh" >&2
+  echo "  または: export CDP0_REPO_ROOT=/home/.../py_tanker" >&2
   exit 1
 fi
 
