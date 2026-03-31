@@ -8,6 +8,7 @@ ship_details_jp_prev.json と ship_details_jp.json を比較し、
   python cdp5_diff_ship_positions.py --min-distance-km 0.5 --min-speed-kn 1.0
   python cdp5_diff_ship_positions.py --mode latlon_round --latlon-decimals 3
   python cdp5_diff_ship_positions.py --mode latlon_round --latlon-quantize truncate
+  python cdp5_diff_ship_positions.py --latlon-moved-if-speed-ge 10
 """
 
 from __future__ import annotations
@@ -66,12 +67,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--min-distance-km", type=float, default=1.0, help="Moved threshold by distance (km); threshold モードのみ")
     p.add_argument("--min-speed-kn", type=float, default=1.0, help="Moved threshold by speed (knots); threshold モードのみ")
     p.add_argument(
+        "--latlon-moved-if-speed-ge",
+        type=float,
+        default=None,
+        metavar="KN",
+        help="指定時は自動で latlon_round になる。現在速力>=KN なら格子が同じでも MOVED。格子のみのときは --mode latlon_round のみ",
+    )
+    p.add_argument(
         "--json-out",
         type=Path,
         default=None,
         help="JSON report path (default: ship_moved/moved_report_01.json; 書き込み前に 01〜06 をローテーション)",
     )
-    return p.parse_args()
+    ns = p.parse_args()
+    if ns.latlon_moved_if_speed_ge is not None:
+        ns.mode = "latlon_round"
+    return ns
 
 
 DEFAULT_MOVED_JSON = Path("ship_moved") / "moved_report_01.json"
@@ -118,17 +129,27 @@ def index_report_rows_by_ship_id(report_path: Path) -> dict[str, dict[str, Any]]
     return out
 
 
+def copy_previous_report_row_flat(prev_row: dict[str, Any]) -> dict[str, Any]:
+    """
+    直前レポート1行分のコピー。previous_report_row は含めない（入れ子で JSON が太り続けるのを防ぐ）。
+    他フィールドは deepcopy（共有参照で現在行を汚さないため）。
+    """
+    out = copy.deepcopy(prev_row)
+    out.pop("previous_report_row", None)
+    return out
+
+
 def attach_previous_report_rows(
     rows: list[dict[str, Any]], prev_by_id: dict[str, dict[str, Any]]
 ) -> None:
-    """moved が True の行に、直前レポートの同一 ship_id 行を previous_report_row で追記。"""
+    """moved が True の行に、直前レポートの同一 ship_id 行を previous_report_row で追記（1段のみ）。"""
     for row in rows:
         if not row.get("moved"):
             continue
         sid = str(row.get("ship_id") or "").strip()
         if not sid or sid not in prev_by_id:
             continue
-        row["previous_report_row"] = copy.deepcopy(prev_by_id[sid])
+        row["previous_report_row"] = copy_previous_report_row_flat(prev_by_id[sid])
 
 
 def _normalize_latlon_pair(val: Any) -> list[float] | None:
@@ -294,7 +315,10 @@ def main() -> None:
         p = prev_idx[ship_id]
         c = curr_idx[ship_id]
         dist_km = haversine_km(p["lat"], p["lon"], c["lat"], c["lon"])
-        speed = c.get("speed") or 0.0
+        try:
+            speed = float(c.get("speed") or 0.0)
+        except (TypeError, ValueError):
+            speed = 0.0
         if args.mode == "latlon_round":
             prev_r = quantize_latlon(
                 p["lat"], p["lon"], args.latlon_decimals, args.latlon_quantize
@@ -303,6 +327,8 @@ def main() -> None:
                 c["lat"], c["lon"], args.latlon_decimals, args.latlon_quantize
             )
             moved_flag = prev_r != curr_r
+            if args.latlon_moved_if_speed_ge is not None and speed >= args.latlon_moved_if_speed_ge:
+                moved_flag = True
         else:
             moved_flag = (dist_km >= args.min_distance_km) or (speed >= args.min_speed_kn)
         if moved_flag:
@@ -329,9 +355,12 @@ def main() -> None:
 
     if args.mode == "latlon_round":
         q = "rounded" if args.latlon_quantize == "round" else "truncated"
+        extra_sp = ""
+        if args.latlon_moved_if_speed_ge is not None:
+            extra_sp = f" OR curr_speed>={args.latlon_moved_if_speed_ge}kn"
         summary = (
             f"Compared={len(rows)} moved={moved} "
-            f"(lat/lon {q} to {args.latlon_decimals} decimals: differ => MOVED)"
+            f"(lat/lon {q} to {args.latlon_decimals} decimals: differ => MOVED{extra_sp})"
         )
     else:
         summary = (
@@ -367,6 +396,8 @@ def main() -> None:
     if args.mode == "latlon_round":
         payload["latlon_decimals"] = args.latlon_decimals
         payload["latlon_quantize"] = args.latlon_quantize
+        if args.latlon_moved_if_speed_ge is not None:
+            payload["latlon_moved_if_speed_ge"] = args.latlon_moved_if_speed_ge
     else:
         payload["min_distance_km"] = args.min_distance_km
         payload["min_speed_kn"] = args.min_speed_kn

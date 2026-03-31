@@ -244,6 +244,11 @@ def main() -> None:
         action="store_true",
         help="モード一致・重複除去のあと、LAT 先頭2桁が 2x（20°台）かつ LON 先頭2桁が 4x または 5x の行だけ残す",
     )
+    p.add_argument(
+        "--exclude-lon-minus",
+        action="store_true",
+        help="LON の文字列が先頭（空白除く）が '-' の行を除く（西経の負表記を落とす）",
+    )
     args = p.parse_args()
 
     in_path = Path(args.input)
@@ -259,6 +264,10 @@ def main() -> None:
     prefix_before = len(matched)
     if args.filter_lat_lon_prefix:
         matched = [r for r in matched if lat_lon_prefix_match(r)]
+
+    lon_minus_before = len(matched)
+    if args.exclude_lon_minus:
+        matched = [r for r in matched if not str(r.get("LON") or "").strip().startswith("-")]
 
     if args.with_meta:
         meta_broad = args.mode in ("japan_broad", "japan_tanker_broad")
@@ -296,6 +305,8 @@ def main() -> None:
     extra = ""
     if args.filter_lat_lon_prefix:
         extra = f" after_lat_lon_prefix={len(matched)}/{prefix_before}"
+    if args.exclude_lon_minus:
+        extra += f" after_exclude_lon_minus={len(matched)}/{lon_minus_before}"
     print(
         f"# input={in_path.name} mode={args.mode} total_rows={len(rows)} "
         f"matched={len(matched)} deduped={deduped_count}{extra}",
