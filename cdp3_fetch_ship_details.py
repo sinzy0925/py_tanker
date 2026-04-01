@@ -85,6 +85,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--timeout-ms", type=int, default=120_000, help="Navigation timeout in ms")
     p.add_argument("--post-open-wait-ms", type=int, default=7_000, help="Wait after opening details page")
     p.add_argument(
+        "--reload-before-scrape",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="詳細ページを開いた後に1回リロードしてから取得する（既定: on）",
+    )
+    p.add_argument(
         "--details-url-template",
         default=DEFAULT_DETAILS_URL_TEMPLATE,
         help="Detail URL template (use {ship_id})",
@@ -345,6 +351,12 @@ async def collect_detail_jsons(
         except PlaywrightTimeoutError:
             await page.goto(detail_url, wait_until="commit", timeout=args.timeout_ms)
         await page.wait_for_timeout(args.post_open_wait_ms)
+        if getattr(args, "reload_before_scrape", True):
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=args.timeout_ms)
+            except PlaywrightTimeoutError:
+                await page.reload(wait_until="commit", timeout=args.timeout_ms)
+            await page.wait_for_timeout(args.post_open_wait_ms)
     finally:
         page.remove_listener("response", on_response)
 
@@ -442,6 +454,7 @@ async def run(args: argparse.Namespace) -> int:
                 one = await collect_detail_jsons(page, ship_id, ship_name, args)
                 results.append(one)
                 write_ship_details_json(args.output, args, targets, results, run_started_utc)
+                print(f"  -> JSON更新済: {args.output}", flush=True)
                 if idx % 10 == 0:
                     elapsed = time.perf_counter() - app_start
                     print()
