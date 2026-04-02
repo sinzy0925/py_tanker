@@ -9,6 +9,8 @@ ship_details_jp_prev.json と ship_details_jp.json を比較し、
   python cdp5_diff_ship_positions.py --mode latlon_round --latlon-decimals 3
   python cdp5_diff_ship_positions.py --mode latlon_round --latlon-quantize truncate
   python cdp5_diff_ship_positions.py --latlon-moved-if-speed-ge 10
+  python cdp5_diff_ship_positions.py --types-jsonl ship_data/out.jsonl
+  # moved_report の各行に gt_shiptype / type_letter（O/L/P/C）を付与（JSONL 優先、無ければ ship_details の /general subtype）
 """
 
 from __future__ import annotations
@@ -30,6 +32,14 @@ except ZoneInfoNotFoundError:
 
 
 SHIP_DATA_DIR = Path("ship_data")
+
+# station0 / out.jsonl の GT_SHIPTYPE → 地図1文字（cdp6 用）
+GT_SHIPTYPE_TO_LETTER: dict[str, str] = {
+    "17": "O",  # Crude Oil Tanker
+    "18": "L",  # LNG Tanker
+    "71": "P",  # Oil Products Tanker
+    "88": "C",  # Oil/Chemical Tanker
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,7 +87,13 @@ def parse_args() -> argparse.Namespace:
         "--json-out",
         type=Path,
         default=None,
-        help="JSON report path (default: ship_moved/moved_report_01.json; 書き込み前に 01〜06 をローテーション)",
+        help="JSON report path (default: ship_moved/moved_report_01.json; 書き込み前に 01〜10 をローテーション)",
+    )
+    p.add_argument(
+        "--types-jsonl",
+        type=Path,
+        default=SHIP_DATA_DIR / "out.jsonl",
+        help="GT_SHIPTYPE を ship_id で引く JSONL（既定: ship_data/out.jsonl）。無い行は ship_details から推定",
     )
     ns = p.parse_args()
     if ns.latlon_moved_if_speed_ge is not None:
@@ -93,13 +109,13 @@ def default_json_out_path() -> Path:
 
 
 def rotate_moved_report_files(ship_moved_dir: Path) -> None:
-    """moved_report_06 を削除し、05→06 … 01→02 とリネーム（新規 01 書き込み前に呼ぶ）。"""
+    """moved_report_10 を削除し、09→10 … 01→02 とリネーム（新規 01 書き込み前に呼ぶ）。"""
     ship_moved_dir.mkdir(parents=True, exist_ok=True)
-    names = [f"moved_report_{i:02d}.json" for i in range(1, 7)]
-    p06 = ship_moved_dir / names[5]
-    if p06.is_file():
-        p06.unlink()
-    for i in range(4, -1, -1):
+    names = [f"moved_report_{i:02d}.json" for i in range(1, 11)]
+    p10 = ship_moved_dir / names[9]
+    if p10.is_file():
+        p10.unlink()
+    for i in range(8, -1, -1):
         src = ship_moved_dir / names[i]
         dst = ship_moved_dir / names[i + 1]
         if src.is_file():
@@ -296,6 +312,92 @@ def index_positions(root: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def index_full_results(root: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """ship_id → ship_details の result 1件（型推定用）。"""
+    out: dict[str, dict[str, Any]] = {}
+    results = root.get("results")
+    if not isinstance(results, list):
+        return out
+    for one in results:
+        if not isinstance(one, dict):
+            continue
+        ship_id = str(one.get("ship_id") or "").strip()
+        if not ship_id:
+            continue
+        out[ship_id] = one
+    return out
+
+
+def type_from_ship_details_general(one: dict[str, Any]) -> tuple[str | None, str | None]:
+    """matches の /general の subtype から (gt_shiptype 風コード, type_letter) を推定。"""
+    for m in one.get("matches", []) if isinstance(one.get("matches"), list) else []:
+        if not isinstance(m, dict):
+            continue
+        url = str(m.get("url") or "")
+        if "/general" not in url:
+            continue
+        pl = m.get("payload")
+        if not isinstance(pl, dict):
+            continue
+        st = str(pl.get("subtype") or "")
+        ul = st.upper()
+        if "CRUDE" in ul:
+            return ("17", "O")
+        if "LNG" in ul:
+            return ("18", "L")
+        if "OIL PRODUCT" in ul or "PRODUCTS TANKER" in ul:
+            return ("71", "P")
+        if "CHEMICAL" in ul or "OIL/CHEMICAL" in ul:
+            return ("88", "C")
+    return (None, None)
+
+
+def load_gt_shiptype_from_jsonl(path: Path) -> dict[str, tuple[str, str]]:
+    """SHIP_ID → (GT_SHIPTYPE 文字列, type_letter)。"""
+    out: dict[str, tuple[str, str]] = {}
+    if not path.is_file():
+        return out
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        sid = str(row.get("SHIP_ID") or "").strip()
+        gt = str(row.get("GT_SHIPTYPE") or "").strip()
+        if not sid or not gt:
+            continue
+        letter = GT_SHIPTYPE_TO_LETTER.get(gt, "")
+        out[sid] = (gt, letter)
+    return out
+
+
+def resolve_ship_type(
+    ship_id: str,
+    jsonl_map: dict[str, tuple[str, str]],
+    curr_result: dict[str, Any] | None,
+) -> tuple[str | None, str | None]:
+    """gt_shiptype 文字列と type_letter（O/L/P/C）。"""
+    if ship_id in jsonl_map:
+        gt, letter = jsonl_map[ship_id]
+        if letter:
+            return (gt, letter)
+        return (gt, None)
+    if curr_result:
+        gt, letter = type_from_ship_details_general(curr_result)
+        if letter:
+            return (gt, letter)
+    return (None, None)
+
+
 def main() -> None:
     args = parse_args()
     prev_root = load_json(args.prev)
@@ -303,6 +405,8 @@ def main() -> None:
 
     prev_idx = index_positions(prev_root)
     curr_idx = index_positions(curr_root)
+    curr_by_id = index_full_results(curr_root)
+    jsonl_types = load_gt_shiptype_from_jsonl(args.types_jsonl.resolve())
     common_ids = sorted(set(prev_idx) & set(curr_idx))
 
     if not common_ids:
@@ -333,6 +437,7 @@ def main() -> None:
             moved_flag = (dist_km >= args.min_distance_km) or (speed >= args.min_speed_kn)
         if moved_flag:
             moved += 1
+        gt_s, type_letter = resolve_ship_type(ship_id, jsonl_types, curr_by_id.get(ship_id))
         row: dict[str, Any] = {
             "ship_id": ship_id,
             "ship_name": c.get("ship_name") or p.get("ship_name"),
@@ -345,6 +450,10 @@ def main() -> None:
             "prev_captured_at_jst": p.get("captured_at_jst"),
             "curr_captured_at_jst": c.get("captured_at_jst"),
         }
+        if gt_s is not None:
+            row["gt_shiptype"] = gt_s
+        if type_letter:
+            row["type_letter"] = type_letter
         if args.mode == "latlon_round":
             row["compare_mode"] = "latlon_round"
             row["latlon_decimals"] = args.latlon_decimals

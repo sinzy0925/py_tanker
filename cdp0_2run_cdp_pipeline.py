@@ -31,6 +31,8 @@ STEPS: list[list[str]] = [
         "--mode",
         #"all",
         "japan_jp",
+        "--include-gt-shiptypes",
+        "17,18,71,88",
         "--dedupe-by-ship-id",
         #"--filter-lat-lon-prefix",
         #"--exclude-lon-minus",
@@ -66,6 +68,11 @@ STEPS: list[list[str]] = [
         "cdp6_google-maps.py",
         "--input",
         "ship_moved/moved_report_01.json",
+    ],
+    [
+        "cdp6_google-maps.py",
+        "--input",
+        "ship_moved/moved_report_01.json",
         "--region",
         "persian_gulf",
     ],
@@ -76,6 +83,19 @@ STEPS: list[list[str]] = [
         "--region",
         "red_sea",
     ],
+        ["cdp7_make_gif.py",
+        "--pattern",
+        "ship_moved/persian_*.png",
+        "--output",
+        "ship_moved/persian.gif",
+    ],
+    ["cdp7_make_gif.py",
+        "--pattern",
+        "ship_moved/red_*.png",
+        "--output",
+        "ship_moved/red.gif",
+    ],
+
 
 ]
 

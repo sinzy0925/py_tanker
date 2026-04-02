@@ -79,7 +79,18 @@ def rotate_if_exists(output: Path) -> Path | None:
 
 
 def is_voyage_japan_like(result: dict[str, Any]) -> bool:
-    """voyage.reportedDestination を japan_wide_signals でヒットすれば日本向けっぽいとみなす。"""
+    """
+    日本向けっぽさ判定。
+    1) cdp3 の要約項目（reported_destination / matched_destination）を優先
+    2) 無ければ従来どおり matches の voyage.reportedDestination を走査
+    """
+    # cdp3 で要約済みの値を優先
+    for key in ("reported_destination", "matched_destination"):
+        v = result.get(key)
+        if v is not None and destination_japan_hits_broad(str(v).strip()):
+            return True
+
+    # 従来互換: matches から voyage.reportedDestination を拾う
     for m in result.get("matches", []) if isinstance(result.get("matches"), list) else []:
         if not isinstance(m, dict):
             continue

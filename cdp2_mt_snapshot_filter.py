@@ -208,6 +208,15 @@ def dedupe_by_ship_id(rows: list[dict]) -> tuple[list[dict], int]:
     return out, dropped
 
 
+def _normalize_type_code(value: object) -> str:
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Filter MarineTraffic-style snapshot JSON")
     p.add_argument(
@@ -249,6 +258,12 @@ def main() -> None:
         action="store_true",
         help="LON の文字列が先頭（空白除く）が '-' の行を除く（西経の負表記を落とす）",
     )
+    p.add_argument(
+        "--include-gt-shiptypes",
+        default="",
+        metavar="CODES",
+        help="GT_SHIPTYPE の許可リスト（カンマ区切り例: 17,18,71,88）。指定時はこのコードのみ残す",
+    )
     args = p.parse_args()
 
     in_path = Path(args.input)
@@ -258,6 +273,12 @@ def main() -> None:
 
     rows = load_rows(in_path)
     matched = [r for r in rows if match_mode(r, args.mode)]
+    gt_before = len(matched)
+    allowed_gt: set[str] = {
+        _normalize_type_code(x) for x in args.include_gt_shiptypes.split(",") if _normalize_type_code(x)
+    }
+    if allowed_gt:
+        matched = [r for r in matched if _normalize_type_code(r.get("GT_SHIPTYPE")) in allowed_gt]
     deduped_count = 0
     if args.dedupe_by_ship_id:
         matched, deduped_count = dedupe_by_ship_id(matched)
@@ -303,8 +324,10 @@ def main() -> None:
 
     # stdout: compact table
     extra = ""
+    if allowed_gt:
+        extra += f" after_gt_shiptype={len(matched)}/{gt_before}"
     if args.filter_lat_lon_prefix:
-        extra = f" after_lat_lon_prefix={len(matched)}/{prefix_before}"
+        extra += f" after_lat_lon_prefix={len(matched)}/{prefix_before}"
     if args.exclude_lon_minus:
         extra += f" after_exclude_lon_minus={len(matched)}/{lon_minus_before}"
     print(

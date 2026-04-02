@@ -279,6 +279,56 @@ def _extract_payload_time_jst(payload: Any) -> dict[str, str]:
     return out
 
 
+def _extract_ui_summary_fields(matches: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    画面で見たい代表項目を matches から要約する。
+    - flag: general payload の countryCode/country
+    - reported_destination: voyage payload の reportedDestination
+    - matched_destination: API にあれば destinationName/matchedDestination/arrivalPortName を採用
+      （無ければ None）
+    """
+    flag: str | None = None
+    reported_destination: str | None = None
+    matched_destination: str | None = None
+
+    for m in sorted(matches, key=lambda x: str(x.get("captured_at_utc") or ""), reverse=True):
+        if not isinstance(m, dict):
+            continue
+        url = str(m.get("url") or "")
+        payload = m.get("payload")
+        if not isinstance(payload, dict):
+            continue
+
+        if flag is None and "/general" in url:
+            cc = str(payload.get("countryCode") or "").strip()
+            c = str(payload.get("country") or "").strip()
+            if cc:
+                flag = cc
+            elif c:
+                flag = c
+
+        if "/voyage" in url:
+            if reported_destination is None:
+                rd = str(payload.get("reportedDestination") or "").strip()
+                if rd:
+                    reported_destination = rd
+            if matched_destination is None:
+                for k in ("matchedDestination", "destinationName", "arrivalPortName"):
+                    v = str(payload.get(k) or "").strip()
+                    if v:
+                        matched_destination = v
+                        break
+
+        if flag is not None and reported_destination is not None and matched_destination is not None:
+            break
+
+    return {
+        "flag": flag,
+        "reported_destination": reported_destination,
+        "matched_destination": matched_destination,
+    }
+
+
 def _prev_output_path(output: Path) -> Path:
     return output.with_name(f"{output.stem}_prev{output.suffix}")
 
@@ -370,16 +420,23 @@ async def collect_detail_jsons(
             "detail_url": detail_url,
             "ok": False,
             "matched_count": 0,
+            "flag": None,
+            "reported_destination": None,
+            "matched_destination": None,
             "message": "details JSON not captured",
         }
 
     ordered = sorted(matches, key=lambda m: _score_payload(m.get("payload")), reverse=True)
+    ui_summary = _extract_ui_summary_fields(matches)
     out: dict[str, Any] = {
         "ship_id": ship_id,
         "ship_name": ship_name,
         "detail_url": detail_url,
         "ok": True,
         "matched_count": len(matches),
+        "flag": ui_summary.get("flag"),
+        "reported_destination": ui_summary.get("reported_destination"),
+        "matched_destination": ui_summary.get("matched_destination"),
         "best": ordered[0],
     }
     if args.show_all:
