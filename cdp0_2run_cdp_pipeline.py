@@ -18,6 +18,7 @@ cdp5:
 """
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 from pathlib import Path
@@ -100,17 +101,35 @@ STEPS: list[list[str]] = [
 ]
 
 
-def main() -> int:
-    for argv in STEPS:
-        script = ROOT / argv[0]
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description="Run cdp pipeline from cdp2 -> ...")
+    p.add_argument("--USA", action="store_true", help="Use cdp2 mode: usa_military")
+    args = p.parse_args(argv)
+
+    cdp2_mode = "usa_military" if args.USA else "japan_jp"
+    steps = [list(s) for s in STEPS]
+    # STEPS[0] layout: ["cdp2_mt_snapshot_filter.py", "--mode", <mode>, ...]
+    try:
+        mode_i = steps[0].index("--mode")
+        steps[0][mode_i + 1] = cdp2_mode
+    except Exception:
+        steps[0][2] = cdp2_mode
+
+    # USA のときは タンカー縛り（GT_SHIPTYPE 許可リスト）を外す
+    if args.USA and "--include-gt-shiptypes" in steps[0]:
+        i = steps[0].index("--include-gt-shiptypes")
+        del steps[0][i : i + 2]
+
+    for step in steps:
+        script = ROOT / step[0]
         if not script.is_file():
             print(f"ERROR: not found: {script}", file=sys.stderr)
             return 1
-        cmd = [sys.executable, str(script), *argv[1:]]
+        cmd = [sys.executable, str(script), *step[1:]]
         print(f"+ {' '.join(cmd)}", flush=True)
         r = subprocess.run(cmd, cwd=str(ROOT))
         if r.returncode != 0:
-            print(f"ERROR: exit {r.returncode} from {argv[0]}", file=sys.stderr)
+            print(f"ERROR: exit {r.returncode} from {step[0]}", file=sys.stderr)
             return r.returncode
     return 0
 

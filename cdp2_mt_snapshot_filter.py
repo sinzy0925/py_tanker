@@ -129,6 +129,31 @@ def is_jp_substring_in_fields(row: dict) -> bool:
     return False
 
 
+def is_usa_military(row: dict) -> bool:
+    """
+    アメリカの軍関連（米海軍・軍関連船）っぽい行だけを雑に拾う。
+    目的地/フラグ/船名に 'USS'/'USNS'/'NAVY'/'NAVAL'/'MILITARY' 等が含まれるかで判定する。
+    """
+    shipname = str(row.get("SHIPNAME") or "").upper()
+    destination = str(row.get("DESTINATION") or "").upper()
+    flag = row_flag(row)
+
+    # 船名の代表例: USS / USNS
+    if "USS" in shipname or "USNS" in shipname:
+        return True
+
+    # 目的地/船名に軍関連キーワードがあれば採用
+    for token in ("US NAVY", "NAVY", "NAVAL", "MILITARY", "ARMY", "DEFENSE"):
+        if token in shipname or token in destination:
+            return True
+
+    # FLAG が米国で、かつ目的地側が軍っぽい場合も採用
+    if flag in ("US", "USA") and any(t in destination for t in ("NAVY", "NAVAL", "MILITARY", "ARMY")):
+        return True
+
+    return False
+
+
 def lat_lon_prefix_match(row: dict) -> bool:
     """
     LAT の文字列（符号を除く）の先頭2文字がともに数字で、かつ十の位が 2（= 20°台）。
@@ -173,6 +198,8 @@ def match_mode(row: dict, mode: str) -> bool:
         return tank and (jf or jdb)
     if mode == "japan_jp":
         return is_jp_substring_in_fields(row)
+    if mode == "usa_military":
+        return is_usa_military(row)
     raise ValueError(f"unknown mode: {mode}")
 
 
@@ -236,9 +263,10 @@ def main() -> None:
             "tanker",
             "japan_tanker",
             "japan_tanker_broad",
+            "usa_military",
         ),
         default="japan_hint",
-        help="japan_hint: JP+目的地(標準); japan_broad: より広い港名・JP略号; japan_jp: DESTINATION/FLAG/SHIPNAME のいずれかに JP を含む; *_tanker*: タンカー推定も併用",
+        help="japan_hint: JP+目的地(標準); japan_broad: より広い港名・JP略号; japan_jp: DESTINATION/FLAG/SHIPNAME のいずれかに JP を含む; usa_military: USS/USNS/NAVY/NAVAL/MILITARY 等; *_tanker*: タンカー推定も併用",
     )
     p.add_argument("--csv", type=Path, metavar="FILE", help="Write UTF-8 CSV (Excel 向け BOM 付き)")
     p.add_argument("--jsonl", type=Path, metavar="FILE", help="Write JSON Lines")
