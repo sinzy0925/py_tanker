@@ -58,7 +58,7 @@ USA_CDP1_URLS = [
 ]
 
 
-def build_steps(*, cdp1_urls: list[str], cdp2_mode: str) -> list[list[str]]:
+def build_steps(*, cdp1_urls: list[str], cdp2_mode: str, shipname_contains: list[str]) -> list[list[str]]:
     cdp1_step = [
         "cdp1_fetch_station0_playwright.py",
         "--show-all",
@@ -81,6 +81,8 @@ def build_steps(*, cdp1_urls: list[str], cdp2_mode: str) -> list[list[str]]:
         # 日本向け（タンカー中心）: GT_SHIPTYPE 許可リストで絞る
         idx = cdp2_step.index("--dedupe-by-ship-id")
         cdp2_step[idx:idx] = ["--include-gt-shiptypes", "17,18,71,88"]
+    for token in shipname_contains:
+        cdp2_step += ["--shipname-contains", token]
 
     return [
         cdp1_step,
@@ -150,6 +152,13 @@ def main(argv: list[str] | None = None) -> int:
         metavar="URL",
         help="Override first cdp1 --url list (repeatable)",
     )
+    p.add_argument(
+        "--shipname-contains",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="cdp2 の既存抽出結果に、SHIPNAME に TEXT を含む行を追加（複数指定可）",
+    )
     args = p.parse_args(argv)
 
     if args.url:
@@ -159,7 +168,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         cdp1_urls = DEFAULT_CDP1_URLS
     cdp2_mode = "usa_military" if args.USA else "japan_jp"
-    steps = build_steps(cdp1_urls=cdp1_urls, cdp2_mode=cdp2_mode)
+    steps = build_steps(
+        cdp1_urls=cdp1_urls,
+        cdp2_mode=cdp2_mode,
+        shipname_contains=args.shipname_contains,
+    )
 
     for step in steps:
         script = ROOT / step[0]

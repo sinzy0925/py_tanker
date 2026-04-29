@@ -179,6 +179,46 @@ def lat_lon_prefix_match(row: dict) -> bool:
     return True
 
 
+def shipname_contains_any(row: dict, needles: list[str]) -> bool:
+    """SHIPNAME に needles のいずれか（大文字小文字無視）を含むか。"""
+    shipname = str(row.get("SHIPNAME") or "").upper()
+    for needle in needles:
+        if needle and needle in shipname:
+            return True
+    return False
+
+
+def _row_identity(row: dict) -> tuple[str, str, str, str]:
+    """SHIP_ID があればそれを優先し、無ければ主要項目で同一判定する。"""
+    sid = str(row.get("SHIP_ID") or "").strip()
+    if sid:
+        return ("sid", sid, "", "")
+    name = str(row.get("SHIPNAME") or "").strip().upper()
+    lat = str(row.get("LAT") or "").strip()
+    lon = str(row.get("LON") or "").strip()
+    return ("fallback", name, lat, lon)
+
+
+def append_shipname_matches(base_rows: list[dict], all_rows: list[dict], needles: list[str]) -> tuple[list[dict], int]:
+    """
+    base_rows に、SHIPNAME が needles を含む行を all_rows から追加する。
+    すでに同一行（SHIP_ID優先）がある場合は重複追加しない。
+    """
+    out = list(base_rows)
+    seen = {_row_identity(r) for r in out}
+    added = 0
+    for r in all_rows:
+        if not shipname_contains_any(r, needles):
+            continue
+        rid = _row_identity(r)
+        if rid in seen:
+            continue
+        out.append(r)
+        seen.add(rid)
+        added += 1
+    return out, added
+
+
 def match_mode(row: dict, mode: str) -> bool:
     jf = is_japan_flag(row)
     jd = is_japan_destination_hint(row)
@@ -292,6 +332,13 @@ def main() -> None:
         metavar="CODES",
         help="GT_SHIPTYPE の許可リスト（カンマ区切り例: 17,18,71,88）。指定時はこのコードのみ残す",
     )
+    p.add_argument(
+        "--shipname-contains",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="既存の抽出結果に加えて、SHIPNAME に指定文字列を含む行を追加する（大文字小文字無視、複数指定可）",
+    )
     args = p.parse_args()
 
     in_path = Path(args.input)
@@ -301,6 +348,8 @@ def main() -> None:
 
     rows = load_rows(in_path)
     matched = [r for r in rows if match_mode(r, args.mode)]
+    shipname_needles = [str(x).strip().upper() for x in args.shipname_contains if str(x).strip()]
+    shipname_added = 0
     gt_before = len(matched)
     allowed_gt: set[str] = {
         _normalize_type_code(x) for x in args.include_gt_shiptypes.split(",") if _normalize_type_code(x)
@@ -317,6 +366,9 @@ def main() -> None:
     lon_minus_before = len(matched)
     if args.exclude_lon_minus:
         matched = [r for r in matched if not str(r.get("LON") or "").strip().startswith("-")]
+
+    if shipname_needles:
+        matched, shipname_added = append_shipname_matches(matched, rows, shipname_needles)
 
     if args.with_meta:
         meta_broad = args.mode in ("japan_broad", "japan_tanker_broad")
@@ -352,6 +404,8 @@ def main() -> None:
 
     # stdout: compact table
     extra = ""
+    if shipname_needles:
+        extra += f" added_shipname={shipname_added}"
     if allowed_gt:
         extra += f" after_gt_shiptype={len(matched)}/{gt_before}"
     if args.filter_lat_lon_prefix:

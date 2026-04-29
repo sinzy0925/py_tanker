@@ -104,6 +104,13 @@ STEPS: list[list[str]] = [
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Run cdp pipeline from cdp2 -> ...")
     p.add_argument("--USA", action="store_true", help="Use cdp2 mode: usa_military")
+    p.add_argument(
+        "--shipname-contains",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="cdp2 の既存抽出結果に、SHIPNAME に TEXT を含む行を追加（複数指定可）",
+    )
     args = p.parse_args(argv)
 
     cdp2_mode = "usa_military" if args.USA else "japan_jp"
@@ -119,6 +126,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.USA and "--include-gt-shiptypes" in steps[0]:
         i = steps[0].index("--include-gt-shiptypes")
         del steps[0][i : i + 2]
+
+    for token in args.shipname_contains:
+        steps[0] += ["--shipname-contains", token]
 
     for step in steps:
         script = ROOT / step[0]
